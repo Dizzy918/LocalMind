@@ -31,7 +31,9 @@ LocalMind connects to local AI backends running on your machine and provides a c
 ## Requirements
 
 - **macOS 26.0** (Tahoe) or later
-- **Xcode 26** or later
+- **Xcode Command Line Tools** (or full Xcode 26+)
+  - To install just the CLT: `xcode-select --install`
+  - Or download full Xcode from the App Store
 - One of the following AI backends:
   - [Ollama](https://ollama.com) (recommended)
   - [LM Studio](https://lmstudio.ai)
@@ -47,19 +49,25 @@ git clone https://github.com/Dizzy918/LocalMind.git
 cd LocalMind
 ```
 
-### 2. Open in Xcode
+### 2. Build and Run
+
+**Option A: Using Xcode (GUI)**
 
 ```bash
 open LocalMind.xcodeproj
 ```
 
-No external dependencies — the project uses only Apple frameworks.
-
-### 3. Build and Run
-
 Select the **LocalMind** scheme, choose **My Mac** as the destination, and hit `Cmd + R`.
 
-### 4. Set up an AI backend
+**Option B: Using Command Line**
+
+```bash
+xcodebuild -project LocalMind.xcodeproj -scheme LocalMind -destination 'platform=macOS' run
+```
+
+No external dependencies — the project uses only Apple frameworks.
+
+### 3. Set up an AI backend
 
 The app will auto-detect any running local AI server. The easiest way to get started:
 
