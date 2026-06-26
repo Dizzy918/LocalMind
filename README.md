@@ -13,11 +13,16 @@ LocalMind connects to local AI backends running on your machine and provides a c
 - **Multiple AI Backends** — Apple Intelligence, Ollama, LM Studio, and any OpenAI-compatible server
 - **Auto-detection** — automatically discovers running AI servers and connects
 - **Modern Chat UI** — centered content column, suggestion chips, hover actions, markdown rendering
+- **Message Editing** — edit past user messages to fork the conversation from that point
+- **Regenerate Responses** — get a different answer with one click
+- **Pin & Archive** — pin important conversations to the top, archive old ones
+- **Multi-format Export** — Markdown, JSON, HTML, or plain text
+- **Token Counter** — approximate token count shown per conversation
 - **Voice Input** — speech-to-text with live waveform visualization and auto-punctuation
 - **Text-to-Speech** — read AI responses aloud
 - **Vision** — drag & drop or paste images for analysis (requires a vision model like LLaVA)
 - **File Attachments** — drop PDFs and text files directly into the chat
-- **Full-Text Search** — search across all conversation content, not just titles
+- **Full-Text Search** — multi-word search across all conversation content, not just titles
 - **Custom Tools** — create reusable AI tools with custom system prompts
 - **Menu Bar App** — quick access from the menu bar without switching windows
 - **Global Hotkey** — summon a floating bubble window from anywhere
@@ -69,27 +74,88 @@ No external dependencies — the project uses only Apple frameworks.
 
 ### 3. Set up an AI backend
 
-The app will auto-detect any running local AI server. The easiest way to get started:
+The app will auto-detect any running local AI server. Pick whichever fits your needs:
 
-**Option A: Ollama (recommended)**
+#### Option A: Ollama (recommended for most users)
+
+Best for: easy setup, wide model selection, terminal-friendly.
+
 ```bash
 # Install Ollama
 brew install ollama
 
-# Start the server
+# Start the server (leave running in a background terminal)
 ollama serve
 
 # Pull a model (in another terminal)
 ollama pull qwen3:8b
 ```
 
-**Option B: LM Studio**
+**Recommended models by use case:**
 
-Download from [lmstudio.ai](https://lmstudio.ai), load a model, and start the local server.
+| Use case | Model | Size | Notes |
+|----------|-------|------|-------|
+| General chat (balanced) | `qwen3:8b` | ~5 GB | Default. Fast, smart, great for most tasks |
+| Faster, smaller | `llama3.2:3b` | ~2 GB | Quick on lower-end Macs |
+| Coding | `qwen2.5-coder:7b` | ~4.5 GB | Specifically tuned for code |
+| Strong reasoning | `qwen3:14b` | ~9 GB | Slower but more capable |
+| Vision (images) | `llava:7b` | ~4.5 GB | Required for image analysis |
+| Highest quality | `qwen3:32b` | ~20 GB | Needs M2 Pro / M3 Pro+ with 32 GB+ RAM |
 
-**Option C: Apple Intelligence**
+Hardware guidance:
+- **8 GB RAM**: stick to 3B–4B models (`llama3.2:3b`, `phi3:mini`)
+- **16 GB RAM**: 7B–8B models work comfortably
+- **32 GB RAM**: can run 14B–20B models
+- **64 GB+ RAM**: 32B–70B models become viable
 
-On supported Apple Silicon Macs running macOS 26+, Apple Intelligence is available as a built-in backend with no setup required.
+#### Option B: LM Studio (GUI alternative)
+
+Best for: model discovery via a UI, easy switching between models.
+
+1. Download from [lmstudio.ai](https://lmstudio.ai)
+2. Search and download a model (e.g. `Llama 3.2 8B Instruct`)
+3. Go to the **Local Server** tab → load your model → click **Start Server**
+4. LocalMind will auto-detect it on `http://localhost:1234`
+
+#### Option C: Apple Intelligence (zero setup)
+
+Best for: Apple Silicon Macs with macOS 26+, when you want something that just works.
+
+- No installation needed — uses the on-device Foundation Models
+- Lower quality than 7B+ Ollama models, but instant and battery-friendly
+- Requires Apple Intelligence to be enabled in System Settings
+
+#### Option D: Any OpenAI-compatible server
+
+LocalMind speaks the OpenAI API spec, so it works with:
+- [Jan](https://jan.ai)
+- [Text Generation WebUI](https://github.com/oobabooga/text-generation-webui)
+- [llama.cpp server](https://github.com/ggerganov/llama.cpp)
+- vLLM, llamafile, koboldcpp, etc.
+
+Point LocalMind at the server's base URL in Settings → AI Backend.
+
+### Vision (Image Analysis) Setup
+
+To analyze images, you need a vision-capable model:
+
+```bash
+ollama pull llava:7b
+# or for higher quality:
+ollama pull llava:13b
+```
+
+Then in LocalMind:
+1. Click the sidebar model picker, select `llava:7b`
+2. Drag an image into the chat (or paste with `Cmd + V`)
+3. Ask a question about the image
+
+### Performance Tips
+
+- **First message takes 10-30 seconds** while the model loads into RAM. Subsequent messages are instant.
+- LocalMind keeps Ollama models loaded for **1 hour** after the last message to avoid reload latency
+- For best speed, close other RAM-heavy apps (Chrome, Docker) before chatting
+- M-series Macs are dramatically faster than Intel Macs due to unified memory architecture
 
 Once a backend is running, LocalMind will detect it automatically and show a green status indicator in the sidebar.
 
@@ -150,6 +216,19 @@ All settings are available in the app's Settings panel (`Cmd + ,`):
 - **Temperature / Top-P** — tune generation parameters
 - **Context Limit** — control how many messages are sent as context
 - **Auto-Read Responses** — toggle automatic text-to-speech
+
+## Running Tests
+
+Unit tests live in `Tests/LocalMindTests/`. See [Tests/README.md](Tests/README.md) for instructions on adding the test target and running them.
+
+```bash
+xcodebuild test \
+  -project LocalMind.xcodeproj \
+  -scheme LocalMind \
+  -destination 'platform=macOS'
+```
+
+Tests cover the core models, DataStore (save / load / search / compression), and AIServiceError descriptions.
 
 ## Data Storage
 

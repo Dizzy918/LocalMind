@@ -132,17 +132,20 @@ struct ContentView: View {
     @ViewBuilder
     private var detailView: some View {
         if let id = selectedConversationID,
-           let index = dataStore.conversations.firstIndex(where: { $0.id == id }) {
+           dataStore.conversations.contains(where: { $0.id == id }) {
             ChatView(
                 aiManager: aiManager,
                 dataStore: dataStore,
                 conversation: Binding(
-                    get: { 
-                        index < dataStore.conversations.count ? dataStore.conversations[index] : Conversation()
+                    get: {
+                        // Always look up by ID, not by captured index.
+                        // The array can shift when conversations are added or deleted.
+                        dataStore.conversations.first(where: { $0.id == id }) ?? Conversation()
                     },
                     set: { dataStore.saveConversation($0) }
                 )
             )
+            .id(id) // Force view recreation when conversation changes
         } else {
             let initialConversation = {
                 switch selectedSelection {

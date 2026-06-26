@@ -207,16 +207,32 @@ struct MessageBubble: View {
     let message: ChatMessage
     let isStreaming: Bool
     var onPlay: (() -> Void)? = nil
+    var onDelete: (() -> Void)? = nil
+    var onEdit: ((String) -> Void)? = nil
+    var onRegenerate: (() -> Void)? = nil
 
-    init(message: ChatMessage, isStreaming: Bool = false, onPlay: (() -> Void)? = nil) {
+    init(
+        message: ChatMessage,
+        isStreaming: Bool = false,
+        onPlay: (() -> Void)? = nil,
+        onDelete: (() -> Void)? = nil,
+        onEdit: ((String) -> Void)? = nil,
+        onRegenerate: (() -> Void)? = nil
+    ) {
         self.message = message
         self.isStreaming = isStreaming
         self.onPlay = onPlay
+        self.onDelete = onDelete
+        self.onEdit = onEdit
+        self.onRegenerate = onRegenerate
     }
 
     private var isUser: Bool { message.role == .user }
     @State private var isHovered = false
     @State private var showCopied = false
+    @State private var isEditing = false
+    @State private var editingText = ""
+    @State private var showDeleteConfirmation = false
 
     var body: some View {
         HStack(alignment: .top, spacing: AppTheme.Spacing.md) {
@@ -289,18 +305,54 @@ struct MessageBubble: View {
                         .cornerRadius(AppTheme.Dimensions.cornerRadiusSmall)
                     }
 
-                    MessageMarkdownView(text: displayContent(for: message))
+                    if isEditing {
+                        VStack(alignment: .trailing, spacing: AppTheme.Spacing.sm) {
+                            TextField("Edit message", text: $editingText, axis: .vertical)
+                                .textFieldStyle(.plain)
+                                .font(AppTheme.Typography.body)
+                                .foregroundStyle(AppTheme.Colors.textPrimary)
+                                .lineLimit(1...10)
+                                .padding(AppTheme.Spacing.sm)
+                                .background {
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .fill(AppTheme.Colors.backgroundTertiary)
+                                        .overlay {
+                                            RoundedRectangle(cornerRadius: 8)
+                                                .stroke(AppTheme.Colors.accentPrimary.opacity(0.4), lineWidth: 1)
+                                        }
+                                }
+
+                            HStack(spacing: AppTheme.Spacing.xs) {
+                                MessageActionButton(icon: "xmark", label: "Cancel") {
+                                    withAnimation(AppTheme.Animations.quick) {
+                                        isEditing = false
+                                    }
+                                }
+
+                                MessageActionButton(icon: "checkmark", label: "Save & Regenerate") {
+                                    let trimmed = editingText.trimmingCharacters(in: .whitespacesAndNewlines)
+                                    guard !trimmed.isEmpty else { return }
+                                    withAnimation(AppTheme.Animations.quick) {
+                                        isEditing = false
+                                    }
+                                    onEdit?(trimmed)
+                                }
+                            }
+                        }
+                    } else {
+                        MessageMarkdownView(text: displayContent(for: message))
+                    }
                 }
                 .padding(isUser ? AppTheme.Spacing.md : 0)
                 .background {
-                    if isUser {
+                    if isUser && !isEditing {
                         RoundedRectangle(cornerRadius: AppTheme.Dimensions.cornerRadiusLarge)
                             .fill(AppTheme.Colors.accentPrimary.opacity(0.12))
                     }
                 }
 
-                // Action bar — visible on hover for AI, always hidden for user
-                if !isUser && (isHovered || showCopied) {
+                // Action bar — visible on hover
+                if !isEditing && (isHovered || showCopied) {
                     HStack(spacing: AppTheme.Spacing.xs) {
                         MessageActionButton(icon: showCopied ? "checkmark" : "doc.on.doc", label: showCopied ? "Copied" : "Copy") {
                             NSPasteboard.general.clearContents()
@@ -312,8 +364,27 @@ struct MessageBubble: View {
                             }
                         }
 
-                        if let onPlay {
+                        if isUser, onEdit != nil {
+                            MessageActionButton(icon: "pencil", label: "Edit") {
+                                editingText = message.content
+                                withAnimation(AppTheme.Animations.quick) {
+                                    isEditing = true
+                                }
+                            }
+                        }
+
+                        if !isUser, let onPlay {
                             MessageActionButton(icon: "speaker.wave.2", label: "Read aloud", action: onPlay)
+                        }
+
+                        if !isUser, let onRegenerate {
+                            MessageActionButton(icon: "arrow.clockwise", label: "Regenerate", action: onRegenerate)
+                        }
+
+                        if onDelete != nil {
+                            MessageActionButton(icon: "trash", label: "Delete") {
+                                showDeleteConfirmation = true
+                            }
                         }
                     }
                     .transition(.opacity.combined(with: .move(edge: .top)))
@@ -324,6 +395,52 @@ struct MessageBubble: View {
         }
         .onHover { hovering in
             withAnimation(AppTheme.Animations.quick) { isHovered = hovering }
+        }
+        .contextMenu {
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(message.content, forType: .string)
+            } label: {
+                Label("Copy", systemImage: "doc.on.doc")
+            }
+
+            if isUser, onEdit != nil {
+                Button {
+                    editingText = message.content
+                    isEditing = true
+                } label: {
+                    Label("Edit", systemImage: "pencil")
+                }
+            }
+
+            if !isUser, let onRegenerate {
+                Button(action: onRegenerate) {
+                    Label("Regenerate", systemImage: "arrow.clockwise")
+                }
+            }
+
+            if !isUser, let onPlay {
+                Button(action: onPlay) {
+                    Label("Read aloud", systemImage: "speaker.wave.2")
+                }
+            }
+
+            if onDelete != nil {
+                Divider()
+                Button(role: .destructive) {
+                    showDeleteConfirmation = true
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
+        }
+        .alert("Delete this message?", isPresented: $showDeleteConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) {
+                onDelete?()
+            }
+        } message: {
+            Text("This will permanently remove this message from the conversation.")
         }
     }
 
@@ -496,19 +613,27 @@ struct ConversationRow: View {
                 
                 if !isCompact {
                     VStack(alignment: .leading, spacing: AppTheme.Spacing.xxs) {
-                        Text(isGenerating ? "Generating..." : conversation.title)
-                            .font(AppTheme.Typography.callout)
-                            .foregroundStyle(
-                                isSelected ? AppTheme.Colors.textPrimary : (isGenerating ? AppTheme.Colors.textTertiary : AppTheme.Colors.textSecondary)
-                            )
-                            .lineLimit(1)
-                        
+                        HStack(spacing: 4) {
+                            if conversation.isPinned {
+                                Image(systemName: "pin.fill")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(AppTheme.Colors.accentPrimary)
+                                    .rotationEffect(.degrees(45))
+                            }
+                            Text(isGenerating ? "Generating..." : conversation.title)
+                                .font(AppTheme.Typography.callout)
+                                .foregroundStyle(
+                                    isSelected ? AppTheme.Colors.textPrimary : (isGenerating ? AppTheme.Colors.textTertiary : AppTheme.Colors.textSecondary)
+                                )
+                                .lineLimit(1)
+                        }
+
                         Text(conversation.updatedAt.formatted(.relative(presentation: .named)))
                             .font(AppTheme.Typography.captionSecondary)
                             .foregroundStyle(AppTheme.Colors.textTertiary)
                             .lineLimit(1)
                     }
-                    
+
                     Spacer()
                 }
             }

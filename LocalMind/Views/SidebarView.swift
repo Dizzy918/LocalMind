@@ -255,11 +255,29 @@ struct SidebarView: View {
                             }
                             .padding(.horizontal, AppTheme.Spacing.sm)
                             .contextMenu {
-                                Button("Delete", role: .destructive) {
+                                Button {
+                                    dataStore.togglePin(conversation)
+                                } label: {
+                                    Label(conversation.isPinned ? "Unpin" : "Pin to top",
+                                          systemImage: conversation.isPinned ? "pin.slash" : "pin")
+                                }
+
+                                Button {
+                                    dataStore.toggleArchive(conversation)
+                                } label: {
+                                    Label(conversation.isArchived ? "Unarchive" : "Archive",
+                                          systemImage: conversation.isArchived ? "tray.and.arrow.up" : "archivebox")
+                                }
+
+                                Divider()
+
+                                Button(role: .destructive) {
                                     dataStore.deleteConversation(conversation)
                                     if selectedConversationID == conversation.id {
                                         selectedConversationID = nil
                                     }
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
                                 }
                             }
                         }

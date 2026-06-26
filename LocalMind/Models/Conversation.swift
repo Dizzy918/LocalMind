@@ -43,6 +43,8 @@ struct Conversation: Identifiable, Codable, Sendable {
     var customToolID: String?    // Used if toolType == .chat but it's a custom tool
     var customIconName: String? // Legacy: SF Symbol icon (kept for backward compat)
     var emoji: String?           // AI-generated topic emoji for easy recognition
+    var isPinned: Bool           // Pinned conversations float to the top of the sidebar
+    var isArchived: Bool         // Archived conversations are hidden by default
     let createdAt: Date
     var updatedAt: Date
 
@@ -54,6 +56,8 @@ struct Conversation: Identifiable, Codable, Sendable {
         customToolID: String? = nil,
         customIconName: String? = nil,
         emoji: String? = nil,
+        isPinned: Bool = false,
+        isArchived: Bool = false,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -63,8 +67,46 @@ struct Conversation: Identifiable, Codable, Sendable {
         self.customToolID = customToolID
         self.customIconName = customIconName
         self.emoji = emoji
+        self.isPinned = isPinned
+        self.isArchived = isArchived
         self.createdAt = createdAt
         self.updatedAt = createdAt
+    }
+
+    // Backward-compatible decoding — old files won't have isPinned/isArchived.
+    enum CodingKeys: String, CodingKey {
+        case id, title, messages, toolType, customToolID, customIconName, emoji
+        case isPinned, isArchived, createdAt, updatedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(UUID.self, forKey: .id)
+        self.title = try c.decode(String.self, forKey: .title)
+        self.messages = try c.decode([ChatMessage].self, forKey: .messages)
+        self.toolType = try c.decode(ToolType.self, forKey: .toolType)
+        self.customToolID = try c.decodeIfPresent(String.self, forKey: .customToolID)
+        self.customIconName = try c.decodeIfPresent(String.self, forKey: .customIconName)
+        self.emoji = try c.decodeIfPresent(String.self, forKey: .emoji)
+        self.isPinned = try c.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
+        self.isArchived = try c.decodeIfPresent(Bool.self, forKey: .isArchived) ?? false
+        self.createdAt = try c.decode(Date.self, forKey: .createdAt)
+        self.updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(title, forKey: .title)
+        try c.encode(messages, forKey: .messages)
+        try c.encode(toolType, forKey: .toolType)
+        try c.encodeIfPresent(customToolID, forKey: .customToolID)
+        try c.encodeIfPresent(customIconName, forKey: .customIconName)
+        try c.encodeIfPresent(emoji, forKey: .emoji)
+        try c.encode(isPinned, forKey: .isPinned)
+        try c.encode(isArchived, forKey: .isArchived)
+        try c.encode(createdAt, forKey: .createdAt)
+        try c.encode(updatedAt, forKey: .updatedAt)
     }
 
     /// Returns the conversation's emoji, falling back to the tool type's default

@@ -114,10 +114,21 @@ actor OllamaService: AIServiceProtocol {
 
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)
 
-                    guard let httpResponse = response as? HTTPURLResponse,
-                          httpResponse.statusCode == 200
-                    else {
-                        throw AIServiceError.serverError("Ollama returned non-200 status")
+                    guard let httpResponse = response as? HTTPURLResponse else {
+                        throw AIServiceError.networkError("No HTTP response from Ollama")
+                    }
+
+                    if httpResponse.statusCode != 200 {
+                        // Try to read the error body for a useful message
+                        var errorBody = ""
+                        for try await line in bytes.lines {
+                            errorBody += line
+                            if errorBody.count > 500 { break }
+                        }
+                        if httpResponse.statusCode == 404 {
+                            throw AIServiceError.modelNotFound("Model '\(actualModel)' not found on Ollama. \(errorBody)")
+                        }
+                        throw AIServiceError.serverError("Ollama returned HTTP \(httpResponse.statusCode): \(errorBody)")
                     }
 
                     for try await line in bytes.lines {

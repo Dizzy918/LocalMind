@@ -165,9 +165,29 @@ final class DataStore {
         }
     }
 
-    func conversationsForSelection(_ selection: SidebarSelection) -> [Conversation] {
+    func conversationsForSelection(_ selection: SidebarSelection, includeArchived: Bool = false) -> [Conversation] {
         conversations
             .filter { !$0.messages.isEmpty }
+            .filter { includeArchived || !$0.isArchived }
+            .filter {
+                switch selection {
+                case .chat:
+                    return $0.toolType == .chat && $0.customToolID == nil
+                case .customTool(let id):
+                    return $0.toolType == .chat && $0.customToolID == id
+                }
+            }
+            .sorted { lhs, rhs in
+                // Pinned conversations always sort first; within each group, sort by updatedAt.
+                if lhs.isPinned != rhs.isPinned { return lhs.isPinned }
+                return lhs.updatedAt > rhs.updatedAt
+            }
+    }
+
+    /// Returns archived conversations for the given selection.
+    func archivedConversations(for selection: SidebarSelection) -> [Conversation] {
+        conversations
+            .filter { !$0.messages.isEmpty && $0.isArchived }
             .filter {
                 switch selection {
                 case .chat:
@@ -177,6 +197,20 @@ final class DataStore {
                 }
             }
             .sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    func togglePin(_ conversation: Conversation) {
+        var updated = conversation
+        updated.isPinned.toggle()
+        saveConversation(updated)
+    }
+
+    func toggleArchive(_ conversation: Conversation) {
+        var updated = conversation
+        updated.isArchived.toggle()
+        // Unpinning while archiving keeps the sidebar clean
+        if updated.isArchived { updated.isPinned = false }
+        saveConversation(updated)
     }
 
     // MARK: - Pagination

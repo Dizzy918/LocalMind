@@ -157,26 +157,71 @@ struct ChatView: View {
     // MARK: - Chat Header
 
     private var chatHeader: some View {
-        HStack {
+        HStack(spacing: AppTheme.Spacing.md) {
             Text(conversation.title)
                 .font(AppTheme.Typography.headline)
                 .foregroundStyle(AppTheme.Colors.textPrimary)
                 .lineLimit(1)
 
+            if !conversation.messages.isEmpty {
+                Text(tokenCountLabel)
+                    .font(AppTheme.Typography.captionSecondary)
+                    .foregroundStyle(AppTheme.Colors.textTertiary)
+                    .padding(.horizontal, AppTheme.Spacing.sm)
+                    .padding(.vertical, 2)
+                    .background {
+                        Capsule()
+                            .fill(AppTheme.Colors.backgroundTertiary.opacity(0.6))
+                    }
+                    .help("Approximate token count for this conversation")
+            }
+
             Spacer()
 
-            HoverIconButton(
-                systemName: "square.and.arrow.up",
-                size: 14,
-                baseColor: AppTheme.Colors.textTertiary,
-                hoverColor: AppTheme.Colors.textPrimary,
-                helpText: "Export",
-                action: exportChat
-            )
+            Menu {
+                Button {
+                    exportChat(as: .markdown)
+                } label: {
+                    Label("Markdown (.md)", systemImage: "doc.text")
+                }
+                Button {
+                    exportChat(as: .json)
+                } label: {
+                    Label("JSON (.json)", systemImage: "curlybraces")
+                }
+                Button {
+                    exportChat(as: .plainText)
+                } label: {
+                    Label("Plain Text (.txt)", systemImage: "doc.plaintext")
+                }
+                Button {
+                    exportChat(as: .html)
+                } label: {
+                    Label("HTML (.html)", systemImage: "globe")
+                }
+            } label: {
+                Image(systemName: "square.and.arrow.up")
+                    .font(.system(size: 14))
+                    .foregroundStyle(AppTheme.Colors.textTertiary)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
             .disabled(conversation.messages.isEmpty)
+            .help("Export conversation")
         }
         .padding(.horizontal, AppTheme.Spacing.xl)
         .padding(.vertical, AppTheme.Spacing.sm)
+    }
+
+    /// Rough token estimate based on the GPT-style 4-chars-per-token heuristic.
+    private var tokenCountLabel: String {
+        let charCount = conversation.messages.reduce(0) { $0 + $1.content.count }
+        let tokens = max(1, charCount / 4)
+        if tokens >= 1000 {
+            return "\(String(format: "%.1f", Double(tokens) / 1000))k tokens"
+        }
+        return "\(tokens) tokens"
     }
     
     // MARK: - Messages Area
@@ -189,7 +234,10 @@ struct ChatView: View {
                         MessageBubble(
                             message: message,
                             isStreaming: false,
-                            onPlay: { voiceManager.speak(text: message.content) }
+                            onPlay: { voiceManager.speak(text: message.content) },
+                            onDelete: { deleteMessage(message) },
+                            onEdit: message.role == .user ? { newContent in editAndResend(message: message, newContent: newContent) } : nil,
+                            onRegenerate: message.role == .assistant ? { regenerate(from: message) } : nil
                         )
                         .id(message.id)
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
@@ -649,6 +697,47 @@ struct ChatView: View {
         isStreaming = false
     }
     
+    // MARK: - Message Actions
+
+    /// Delete a single message from the conversation.
+    private func deleteMessage(_ message: ChatMessage) {
+        conversation.messages.removeAll { $0.id == message.id }
+        conversation.updatedAt = Date()
+        dataStore.saveConversation(conversation)
+    }
+
+    /// Replace a user message's content and regenerate the AI response from that point.
+    /// Drops everything after the edited message, then asks the AI to respond again.
+    private func editAndResend(message: ChatMessage, newContent: String) {
+        guard let index = conversation.messages.firstIndex(where: { $0.id == message.id }) else { return }
+
+        // Stop any in-flight stream first
+        if isStreaming { stopStreaming() }
+
+        // Truncate to and including the edited message, with updated content
+        var updatedMessage = conversation.messages[index]
+        updatedMessage.content = newContent
+        conversation.messages = Array(conversation.messages[..<index]) + [updatedMessage]
+        conversation.updatedAt = Date()
+        dataStore.saveConversation(conversation)
+
+        currentStreamTask = Task { await generateResponse() }
+    }
+
+    /// Regenerate an AI response: remove the AI message (and anything after it) and re-prompt.
+    private func regenerate(from message: ChatMessage) {
+        guard let index = conversation.messages.firstIndex(where: { $0.id == message.id }) else { return }
+
+        if isStreaming { stopStreaming() }
+
+        // Drop the AI message and everything after it
+        conversation.messages = Array(conversation.messages[..<index])
+        conversation.updatedAt = Date()
+        dataStore.saveConversation(conversation)
+
+        currentStreamTask = Task { await generateResponse() }
+    }
+
     private func stopStreaming() {
         currentStreamTask?.cancel()
         
@@ -715,29 +804,121 @@ struct ChatView: View {
     }
     
     // MARK: - Export
-    
-    private func exportChat() {
-        var markdown = "# \(conversation.title)\n\n"
-        
-        for message in conversation.messages {
-            let roleName = message.role == .user ? "User" : "AI"
-            markdown += "### \(roleName)\n"
-            markdown += "\(message.content)\n\n"
+
+    enum ExportFormat {
+        case markdown, json, plainText, html
+
+        var fileExtension: String {
+            switch self {
+            case .markdown: return "md"
+            case .json: return "json"
+            case .plainText: return "txt"
+            case .html: return "html"
+            }
         }
-        
+
+        var utType: UTType {
+            switch self {
+            case .markdown: return .text
+            case .json: return .json
+            case .plainText: return .plainText
+            case .html: return .html
+            }
+        }
+    }
+
+    private func exportChat(as format: ExportFormat) {
+        let content: String
+        switch format {
+        case .markdown: content = renderMarkdown()
+        case .json: content = renderJSON()
+        case .plainText: content = renderPlainText()
+        case .html: content = renderHTML()
+        }
+
         let savePanel = NSSavePanel()
-        savePanel.allowedContentTypes = [.plainText]
-        savePanel.nameFieldStringValue = "\(conversation.title.replacingOccurrences(of: " ", with: "_")).md"
-        
+        savePanel.allowedContentTypes = [format.utType]
+        let safeTitle = conversation.title
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
+        savePanel.nameFieldStringValue = "\(safeTitle).\(format.fileExtension)"
+
         savePanel.begin { response in
             if response == .OK, let url = savePanel.url {
                 do {
-                    try markdown.write(to: url, atomically: true, encoding: .utf8)
+                    try content.write(to: url, atomically: true, encoding: .utf8)
                 } catch {
                     print("Failed to save chat: \(error.localizedDescription)")
                 }
             }
         }
+    }
+
+    private func renderMarkdown() -> String {
+        var output = "# \(conversation.title)\n\n"
+        output += "_Exported \(Date().formatted(date: .abbreviated, time: .shortened))_\n\n---\n\n"
+        for message in conversation.messages {
+            let roleName = message.role == .user ? "You" : "LocalMind"
+            output += "### \(roleName)\n\n\(message.content)\n\n"
+        }
+        return output
+    }
+
+    private func renderPlainText() -> String {
+        var output = "\(conversation.title)\n\(String(repeating: "=", count: conversation.title.count))\n\n"
+        for message in conversation.messages {
+            let roleName = message.role == .user ? "YOU" : "LOCALMIND"
+            output += "[\(roleName)]\n\(message.content)\n\n"
+        }
+        return output
+    }
+
+    private func renderJSON() -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        guard let data = try? encoder.encode(conversation),
+              let json = String(data: data, encoding: .utf8) else {
+            return "{}"
+        }
+        return json
+    }
+
+    private func renderHTML() -> String {
+        let escapedTitle = conversation.title.htmlEscaped
+        var body = ""
+        for message in conversation.messages {
+            let role = message.role == .user ? "user" : "assistant"
+            let label = message.role == .user ? "You" : "LocalMind"
+            body += """
+            <div class="message \(role)">
+              <div class="role">\(label)</div>
+              <div class="content">\(message.content.htmlEscaped.replacingOccurrences(of: "\n", with: "<br>"))</div>
+            </div>
+
+            """
+        }
+        return """
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="utf-8">
+          <title>\(escapedTitle)</title>
+          <style>
+            body { font-family: -apple-system, system-ui, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 20px; color: #1d1d1f; line-height: 1.6; }
+            h1 { font-weight: 600; }
+            .message { margin: 24px 0; }
+            .role { font-size: 13px; font-weight: 600; color: #6e6e73; margin-bottom: 4px; }
+            .user .content { background: rgba(0, 122, 255, 0.08); padding: 12px 16px; border-radius: 12px; }
+            .assistant .content { padding: 4px 0; }
+          </style>
+        </head>
+        <body>
+          <h1>\(escapedTitle)</h1>
+          \(body)
+        </body>
+        </html>
+        """
     }
     
 
@@ -808,6 +989,19 @@ struct ChatView: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - HTML Escaping
+
+private extension String {
+    var htmlEscaped: String {
+        self
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&#39;")
     }
 }
 
