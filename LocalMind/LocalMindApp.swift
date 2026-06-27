@@ -12,6 +12,7 @@ struct LocalMindApp: App {
     @State private var sharedAIManager = AIServiceManager()
     @State private var sharedDataStore = DataStore()
     @AppStorage("isDarkMode") private var isDarkMode: Bool = true
+    @AppStorage("enableGlobalShortcut") private var enableGlobalShortcut: Bool = false
     
     var body: some Scene {
         // By changing this from WindowGroup to Window, macOS knows this is a single-window app.
@@ -23,12 +24,22 @@ struct LocalMindApp: App {
                 .preferredColorScheme(isDarkMode ? .dark : .light)
                 .onAppear {
                     BubbleWindowController.shared.setup(aiManager: sharedAIManager, dataStore: sharedDataStore)
-                    
+
                     HotkeyManager.shared.onHotkeyPressed = {
                         BubbleWindowController.shared.toggle()
                     }
-                    HotkeyManager.shared.registerHotkey()
-                    HotkeyManager.shared.requestPermissions()
+                    if enableGlobalShortcut {
+                        HotkeyManager.shared.registerHotkey()
+                        HotkeyManager.shared.requestPermissions()
+                    }
+                }
+                .onChange(of: enableGlobalShortcut) { _, isEnabled in
+                    if isEnabled {
+                        HotkeyManager.shared.registerHotkey()
+                        HotkeyManager.shared.requestPermissions()
+                    } else {
+                        HotkeyManager.shared.unregisterHotkey()
+                    }
                 }
         }
         .commands {

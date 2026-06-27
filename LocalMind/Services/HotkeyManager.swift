@@ -34,13 +34,20 @@ final class HotkeyManager {
     func updateHotkey(keyCode: UInt32, modifiers: UInt32) {
         UserDefaults.standard.set(Int(keyCode), forKey: Self.keyCodeDefaultsKey)
         UserDefaults.standard.set(Int(modifiers), forKey: Self.modifiersDefaultsKey)
-        registerHotkey()
+        if hotKeyRef != nil { registerHotkey() }
     }
 
     func resetHotkey() {
         UserDefaults.standard.removeObject(forKey: Self.keyCodeDefaultsKey)
         UserDefaults.standard.removeObject(forKey: Self.modifiersDefaultsKey)
-        registerHotkey()
+        if hotKeyRef != nil { registerHotkey() }
+    }
+
+    func unregisterHotkey() {
+        if let existing = hotKeyRef {
+            UnregisterEventHotKey(existing)
+            hotKeyRef = nil
+        }
     }
 
     func registerHotkey() {
