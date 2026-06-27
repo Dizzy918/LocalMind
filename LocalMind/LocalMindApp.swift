@@ -68,7 +68,11 @@ struct LocalMindApp: App {
             QuickActionPanel(aiManager: sharedAIManager, dataStore: sharedDataStore)
                 .preferredColorScheme(isDarkMode ? .dark : .light)
         } label: {
+            // .renderingMode(.original) opts out of the template invert so the
+            // icon stays white regardless of menu bar or system appearance.
             Image(systemName: "brain.head.profile")
+                .renderingMode(.original)
+                .foregroundStyle(.white)
                 .help("LocalMind")
         }
         .menuBarExtraStyle(.window)
