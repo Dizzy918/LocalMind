@@ -62,8 +62,8 @@ class BubbleWindowController: NSWindowController {
     }
     
     func show() {
-        window?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        window?.orderFrontRegardless()
+        window?.makeKey()
         isVisible = true
     }
     
