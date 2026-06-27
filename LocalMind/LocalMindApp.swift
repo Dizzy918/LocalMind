@@ -13,6 +13,14 @@ struct LocalMindApp: App {
     @State private var sharedDataStore = DataStore()
     @AppStorage("isDarkMode") private var isDarkMode: Bool = true
     @AppStorage("enableGlobalShortcut") private var enableGlobalShortcut: Bool = false
+
+    init() {
+        // Register the AppStorage default so a fresh install reads `true` here
+        // instead of UserDefaults's bool fallback of `false`.
+        UserDefaults.standard.register(defaults: ["isDarkMode": true])
+        let isDark = UserDefaults.standard.bool(forKey: "isDarkMode")
+        NSApplication.shared.appearance = NSAppearance(named: isDark ? .darkAqua : .aqua)
+    }
     
     var body: some Scene {
         // By changing this from WindowGroup to Window, macOS knows this is a single-window app.
@@ -71,6 +79,12 @@ struct LocalMindApp: App {
     /// SwiftUI's environment. Without this, MenuBarExtra and floating
     /// panels render in the system appearance instead of the app's.
     private func applyAppearance(_ dark: Bool) {
-        NSApp.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+        let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+        NSApp.appearance = appearance
+        // MenuBarExtra and floating panels cache appearance on first show;
+        // explicitly push it to every existing window so they re-render.
+        for window in NSApp.windows {
+            window.appearance = appearance
+        }
     }
 }
