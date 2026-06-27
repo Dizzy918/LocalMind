@@ -329,7 +329,7 @@ struct SettingsView: View {
     private func exportAllData() {
         if let data = try? JSONEncoder().encode(dataStore.conversations) {
             let savePanel = NSSavePanel()
-            savePanel.allowedContentTypes = [UTType.json]
+            savePanel.allowedContentTypes = [UTType(filenameExtension: "json") ?? .data]
             savePanel.nameFieldStringValue = "LocalMind_Export.json"
             
             savePanel.begin { response in

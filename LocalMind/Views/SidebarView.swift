@@ -388,12 +388,7 @@ struct SidebarView: View {
             #endif
         }
         #if os(macOS)
-        // Bring the app to front
-        if #available(macOS 14.0, *) {
-            NSApp.activate()
-        } else {
-            NSApp.activate(ignoringOtherApps: true)
-        }
+        NSApp.activate()
         #endif
     }
     

@@ -7,11 +7,13 @@ import Foundation
 import Speech
 import AVFoundation
 
+extension AVSpeechSynthesizer: @unchecked @retroactive Sendable {}
+
 @Observable
 final class VoiceManager: NSObject, SFSpeechRecognizerDelegate, AVSpeechSynthesizerDelegate, @unchecked Sendable {
-    
+
     // MARK: - Speech Synthesis (Output)
-    nonisolated(unsafe) private let synthesizer = AVSpeechSynthesizer()
+    private let synthesizer = AVSpeechSynthesizer()
     var isSpeaking = false
     
     // MARK: - Speech Recognition (Input)
