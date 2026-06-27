@@ -6,6 +6,21 @@
 //
 
 import SwiftUI
+import AppKit
+
+/// Creates a Color that adapts to the drawing appearance. Uses
+/// `bestMatch(from:)` instead of a direct name comparison so it handles
+/// every dark variant macOS may report (darkAqua, accessibilityHighContrast
+/// variants, etc.) — the previous `$0.name == .darkAqua` check missed those.
+private func adaptiveColor(light: NSColor, dark: NSColor) -> Color {
+    Color(nsColor: NSColor(name: nil) { appearance in
+        let match = appearance.bestMatch(from: [.aqua, .darkAqua, .vibrantDark, .vibrantLight])
+        switch match {
+        case .darkAqua, .vibrantDark: return dark
+        default: return light
+        }
+    })
+}
 
 /// Central design system for LocalAIHelper
 enum AppTheme {
@@ -14,51 +29,51 @@ enum AppTheme {
     
     enum Colors {
         // Backgrounds
-        static let backgroundPrimary = Color(nsColor: NSColor(name: nil) { $0.name == .darkAqua ? NSColor.black : NSColor.white })
-        static let backgroundSecondary = Color(nsColor: NSColor(name: nil) { $0.name == .darkAqua ? NSColor(white: 0.05, alpha: 1.0) : NSColor(white: 0.95, alpha: 1.0) })
-        static let backgroundTertiary = Color(nsColor: NSColor(name: nil) { $0.name == .darkAqua ? NSColor(white: 0.08, alpha: 1.0) : NSColor(white: 0.92, alpha: 1.0) })
-        static let sidebarBackground = Color(nsColor: NSColor(name: nil) { $0.name == .darkAqua ? NSColor.black : NSColor(white: 0.97, alpha: 1.0) })
-        
+        static let backgroundPrimary = adaptiveColor(light: .white, dark: .black)
+        static let backgroundSecondary = adaptiveColor(light: NSColor(white: 0.95, alpha: 1.0), dark: NSColor(white: 0.05, alpha: 1.0))
+        static let backgroundTertiary = adaptiveColor(light: NSColor(white: 0.92, alpha: 1.0), dark: NSColor(white: 0.08, alpha: 1.0))
+        static let sidebarBackground = adaptiveColor(light: NSColor(white: 0.97, alpha: 1.0), dark: .black)
+
         // Accents
-        static let accentPrimary = Color(nsColor: NSColor(name: nil) { $0.name == .darkAqua ? NSColor.white : NSColor.black })
-        static let accentSecondary = Color(nsColor: NSColor(name: nil) { $0.name == .darkAqua ? NSColor(white: 0.7, alpha: 1.0) : NSColor(white: 0.3, alpha: 1.0) })
-        static let accentGreen = Color(nsColor: NSColor(name: nil) { $0.name == .darkAqua ? NSColor(white: 0.85, alpha: 1.0) : NSColor(white: 0.15, alpha: 1.0) })
-        static let accentOrange = Color(nsColor: NSColor(name: nil) { $0.name == .darkAqua ? NSColor(white: 0.6, alpha: 1.0) : NSColor(white: 0.4, alpha: 1.0) })
-        static let accentRed = Color(nsColor: NSColor(name: nil) { $0.name == .darkAqua ? NSColor(white: 0.5, alpha: 1.0) : NSColor(white: 0.5, alpha: 1.0) })
-        
+        static let accentPrimary = adaptiveColor(light: .black, dark: .white)
+        static let accentSecondary = adaptiveColor(light: NSColor(white: 0.3, alpha: 1.0), dark: NSColor(white: 0.7, alpha: 1.0))
+        static let accentGreen = adaptiveColor(light: NSColor(white: 0.15, alpha: 1.0), dark: NSColor(white: 0.85, alpha: 1.0))
+        static let accentOrange = adaptiveColor(light: NSColor(white: 0.4, alpha: 1.0), dark: NSColor(white: 0.6, alpha: 1.0))
+        static let accentRed = adaptiveColor(light: NSColor(white: 0.5, alpha: 1.0), dark: NSColor(white: 0.5, alpha: 1.0))
+
         // Text
-        static let textPrimary = Color(nsColor: NSColor(name: nil) { $0.name == .darkAqua ? NSColor.white : NSColor.black })
-        static let textSecondary = Color(nsColor: NSColor(name: nil) { $0.name == .darkAqua ? NSColor(white: 0.6, alpha: 1.0) : NSColor(white: 0.4, alpha: 1.0) })
-        static let textTertiary = Color(nsColor: NSColor(name: nil) { $0.name == .darkAqua ? NSColor(white: 0.38, alpha: 1.0) : NSColor(white: 0.6, alpha: 1.0) })
-        
+        static let textPrimary = adaptiveColor(light: .black, dark: .white)
+        static let textSecondary = adaptiveColor(light: NSColor(white: 0.4, alpha: 1.0), dark: NSColor(white: 0.6, alpha: 1.0))
+        static let textTertiary = adaptiveColor(light: NSColor(white: 0.6, alpha: 1.0), dark: NSColor(white: 0.38, alpha: 1.0))
+
         // Borders & Dividers
-        static let border = Color(nsColor: NSColor(name: nil) { $0.name == .darkAqua ? NSColor(white: 1.0, alpha: 0.1) : NSColor(white: 0.0, alpha: 0.1) })
-        static let divider = Color(nsColor: NSColor(name: nil) { $0.name == .darkAqua ? NSColor(white: 1.0, alpha: 0.08) : NSColor(white: 0.0, alpha: 0.08) })
-        
+        static let border = adaptiveColor(light: NSColor(white: 0.0, alpha: 0.1), dark: NSColor(white: 1.0, alpha: 0.1))
+        static let divider = adaptiveColor(light: NSColor(white: 0.0, alpha: 0.08), dark: NSColor(white: 1.0, alpha: 0.08))
+
         // Interaction
-        static let hover = Color(nsColor: NSColor(name: nil) { $0.name == .darkAqua ? NSColor(white: 1.0, alpha: 0.06) : NSColor(white: 0.0, alpha: 0.06) })
-        static let hoverSubtle = Color(nsColor: NSColor(name: nil) { $0.name == .darkAqua ? NSColor(white: 1.0, alpha: 0.03) : NSColor(white: 0.0, alpha: 0.03) })
-        
+        static let hover = adaptiveColor(light: NSColor(white: 0.0, alpha: 0.06), dark: NSColor(white: 1.0, alpha: 0.06))
+        static let hoverSubtle = adaptiveColor(light: NSColor(white: 0.0, alpha: 0.03), dark: NSColor(white: 1.0, alpha: 0.03))
+
         // Gradients
         static let accentGradient = LinearGradient(
-            colors: [accentPrimary, Color(nsColor: NSColor(name: nil) { $0.name == .darkAqua ? NSColor(white: 0.65, alpha: 1.0) : NSColor(white: 0.35, alpha: 1.0) })],
+            colors: [accentPrimary, adaptiveColor(light: NSColor(white: 0.35, alpha: 1.0), dark: NSColor(white: 0.65, alpha: 1.0))],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
         )
-        
+
         static let subtleGradient = LinearGradient(
             colors: [
-                Color(nsColor: NSColor(name: nil) { $0.name == .darkAqua ? NSColor(white: 1.0, alpha: 0.06) : NSColor(white: 0.0, alpha: 0.04) }),
-                Color(nsColor: NSColor(name: nil) { $0.name == .darkAqua ? NSColor(white: 1.0, alpha: 0.02) : NSColor(white: 0.0, alpha: 0.01) })
+                adaptiveColor(light: NSColor(white: 0.0, alpha: 0.04), dark: NSColor(white: 1.0, alpha: 0.06)),
+                adaptiveColor(light: NSColor(white: 0.0, alpha: 0.01), dark: NSColor(white: 1.0, alpha: 0.02))
             ],
             startPoint: .top,
             endPoint: .bottom
         )
-        
+
         // Status
         static let statusOnline = Color(red: 0.2, green: 0.84, blue: 0.4)
         static let statusOffline = Color(red: 0.9, green: 0.25, blue: 0.25)
-        static let statusChecking = Color(nsColor: NSColor(name: nil) { $0.name == .darkAqua ? NSColor(white: 0.6, alpha: 1.0) : NSColor(white: 0.4, alpha: 1.0) })
+        static let statusChecking = adaptiveColor(light: NSColor(white: 0.4, alpha: 1.0), dark: NSColor(white: 0.6, alpha: 1.0))
     }
     
     // MARK: - Typography

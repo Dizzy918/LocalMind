@@ -45,6 +45,7 @@ struct Conversation: Identifiable, Codable, Sendable {
     var emoji: String?           // AI-generated topic emoji for easy recognition
     var isPinned: Bool           // Pinned conversations float to the top of the sidebar
     var isArchived: Bool         // Archived conversations are hidden by default
+    var systemPromptOverride: String?  // Per-conversation prompt; nil falls back to the global default
     let createdAt: Date
     var updatedAt: Date
 
@@ -58,6 +59,7 @@ struct Conversation: Identifiable, Codable, Sendable {
         emoji: String? = nil,
         isPinned: Bool = false,
         isArchived: Bool = false,
+        systemPromptOverride: String? = nil,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -69,6 +71,7 @@ struct Conversation: Identifiable, Codable, Sendable {
         self.emoji = emoji
         self.isPinned = isPinned
         self.isArchived = isArchived
+        self.systemPromptOverride = systemPromptOverride
         self.createdAt = createdAt
         self.updatedAt = createdAt
     }
@@ -76,7 +79,7 @@ struct Conversation: Identifiable, Codable, Sendable {
     // Backward-compatible decoding — old files won't have isPinned/isArchived.
     enum CodingKeys: String, CodingKey {
         case id, title, messages, toolType, customToolID, customIconName, emoji
-        case isPinned, isArchived, createdAt, updatedAt
+        case isPinned, isArchived, systemPromptOverride, createdAt, updatedAt
     }
 
     init(from decoder: Decoder) throws {
@@ -90,6 +93,7 @@ struct Conversation: Identifiable, Codable, Sendable {
         self.emoji = try c.decodeIfPresent(String.self, forKey: .emoji)
         self.isPinned = try c.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
         self.isArchived = try c.decodeIfPresent(Bool.self, forKey: .isArchived) ?? false
+        self.systemPromptOverride = try c.decodeIfPresent(String.self, forKey: .systemPromptOverride)
         self.createdAt = try c.decode(Date.self, forKey: .createdAt)
         self.updatedAt = try c.decode(Date.self, forKey: .updatedAt)
     }
@@ -105,6 +109,7 @@ struct Conversation: Identifiable, Codable, Sendable {
         try c.encodeIfPresent(emoji, forKey: .emoji)
         try c.encode(isPinned, forKey: .isPinned)
         try c.encode(isArchived, forKey: .isArchived)
+        try c.encodeIfPresent(systemPromptOverride, forKey: .systemPromptOverride)
         try c.encode(createdAt, forKey: .createdAt)
         try c.encode(updatedAt, forKey: .updatedAt)
     }

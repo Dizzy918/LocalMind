@@ -153,6 +153,38 @@ final class DataStore {
         try? fileManager.removeItem(at: compressedURL)
     }
 
+    /// Imports a JSON file produced by either `Export All` (an array of conversations)
+    /// or a single-conversation export. Returns the number of conversations that
+    /// were added or merged. Duplicates (same `id`) are merged: the existing one
+    /// is replaced only if the incoming `updatedAt` is newer.
+    @discardableResult
+    func importConversations(from data: Data) -> Int {
+        let decoder = JSONDecoder()
+        var imported: [Conversation] = []
+        if let many = try? decoder.decode([Conversation].self, from: data) {
+            imported = many
+        } else if let one = try? decoder.decode(Conversation.self, from: data) {
+            imported = [one]
+        } else {
+            return 0
+        }
+
+        var added = 0
+        for incoming in imported {
+            if let existingIndex = conversations.firstIndex(where: { $0.id == incoming.id }) {
+                if incoming.updatedAt > conversations[existingIndex].updatedAt {
+                    conversations[existingIndex] = incoming
+                    saveConversation(incoming)
+                    added += 1
+                }
+            } else {
+                saveConversation(incoming)
+                added += 1
+            }
+        }
+        return added
+    }
+
     func deleteAllConversations() {
         conversations.removeAll()
         searchIndex.removeAll()
@@ -252,6 +284,34 @@ final class DataStore {
         return conversations
             .filter { matchingIDs.contains($0.id) }
             .sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    /// Returns a short snippet around the first query match within a conversation's
+    /// message text. Returns nil when no message contains the term (e.g. title-only matches).
+    func searchSnippet(for conversation: Conversation, query: String) -> String? {
+        let firstTerm = query.lowercased()
+            .split(separator: " ")
+            .first
+            .map(String.init) ?? ""
+        guard !firstTerm.isEmpty else { return nil }
+
+        for message in conversation.messages {
+            let content = message.content
+            let lower = content.lowercased()
+            guard let range = lower.range(of: firstTerm) else { continue }
+            let radius = 40
+            let startOffset = max(0, lower.distance(from: lower.startIndex, to: range.lowerBound) - radius)
+            let matchEndOffset = lower.distance(from: lower.startIndex, to: range.upperBound)
+            let endOffset = min(content.count, matchEndOffset + radius)
+            let startIdx = content.index(content.startIndex, offsetBy: startOffset)
+            let endIdx = content.index(content.startIndex, offsetBy: endOffset)
+            let prefix = startOffset > 0 ? "…" : ""
+            let suffix = endOffset < content.count ? "…" : ""
+            return prefix + content[startIdx..<endIdx]
+                .replacingOccurrences(of: "\n", with: " ")
+                .trimmingCharacters(in: .whitespaces) + suffix
+        }
+        return nil
     }
 
     private func buildSearchIndex() {

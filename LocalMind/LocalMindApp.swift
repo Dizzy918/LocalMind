@@ -23,9 +23,9 @@ struct LocalMindApp: App {
     }
     
     var body: some Scene {
-        // By changing this from WindowGroup to Window, macOS knows this is a single-window app.
-        // It will now automatically remember your exact window position and size forever!
-        Window("LocalMind", id: "main") {
+        // WindowGroup so ⌘N opens a fresh window. The first window still
+        // restores its position via SwiftUI's built-in scene restoration.
+        WindowGroup("LocalMind", id: "main") {
             ContentView(aiManager: sharedAIManager, dataStore: sharedDataStore)
                 .frame(minWidth: AppTheme.Dimensions.minWindowWidth, minHeight: AppTheme.Dimensions.minWindowHeight)
                 .background(AppTheme.Colors.backgroundPrimary)

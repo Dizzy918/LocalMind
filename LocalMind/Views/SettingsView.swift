@@ -14,6 +14,7 @@ struct SettingsView: View {
     let dataStore: DataStore
     
     @State private var selectedTab: SettingsTab = .general
+    @State private var importStatus: String = ""
     
     // New AppStorage bindings
     @AppStorage("isDarkMode") private var isDarkMode: Bool = true
@@ -313,7 +314,21 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            
+
+            Section("Import") {
+                Button("Import Conversations…") {
+                    importConversations()
+                }
+                if !importStatus.isEmpty {
+                    Text(importStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text("Adds conversations from a previously-exported JSON file. Existing conversations are kept; updates merge by most recent timestamp.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Danger Zone") {
                 Button("Clear All Chat History") {
                     dataStore.deleteAllConversations()
@@ -327,6 +342,21 @@ struct SettingsView: View {
         .formStyle(.grouped)
     }
     
+    private func importConversations() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "json") ?? .data]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.begin { response in
+            guard response == .OK, let url = panel.url,
+                  let data = try? Data(contentsOf: url) else { return }
+            let count = dataStore.importConversations(from: data)
+            importStatus = count == 0
+                ? "Could not parse the file — is it a LocalMind export?"
+                : "Imported \(count) conversation\(count == 1 ? "" : "s")."
+        }
+    }
+
     private func exportAllData() {
         if let data = try? JSONEncoder().encode(dataStore.conversations) {
             let savePanel = NSSavePanel()

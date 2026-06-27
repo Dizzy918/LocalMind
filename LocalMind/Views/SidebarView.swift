@@ -259,15 +259,24 @@ struct SidebarView: View {
                         }
                     } else {
                         ForEach(conversations) { conversation in
-                            ConversationRow(
-                                conversation: conversation,
-                                isSelected: selectedConversationID == conversation.id,
-                                isCompact: isCompact
-                            ) {
-                                withAnimation(AppTheme.Animations.quick) {
-                                    selectedConversationID = conversation.id
+                            VStack(alignment: .leading, spacing: 2) {
+                                ConversationRow(
+                                    conversation: conversation,
+                                    isSelected: selectedConversationID == conversation.id,
+                                    isCompact: isCompact
+                                ) {
+                                    withAnimation(AppTheme.Animations.quick) {
+                                        selectedConversationID = conversation.id
+                                    }
+                                }
+                                if !isCompact, !searchQuery.isEmpty,
+                                   let snippet = dataStore.searchSnippet(for: conversation, query: searchQuery) {
+                                    SearchSnippetView(snippet: snippet, term: searchQuery)
+                                        .padding(.leading, AppTheme.Spacing.lg)
+                                        .padding(.trailing, AppTheme.Spacing.sm)
                                 }
                             }
+                            .id(conversation.id)
                             .padding(.horizontal, AppTheme.Spacing.sm)
                             .contextMenu {
                                 Button {
@@ -531,5 +540,36 @@ struct MergeTargetPicker: View {
         }
         .padding(AppTheme.Spacing.lg)
         .frame(width: 480, height: 420)
+    }
+}
+
+/// Renders a search snippet with the matched term highlighted.
+struct SearchSnippetView: View {
+    let snippet: String
+    let term: String
+
+    private var attributed: AttributedString {
+        var attributed = AttributedString(snippet)
+        attributed.foregroundColor = .secondary
+        let lowerTerm = term.lowercased().split(separator: " ").first.map(String.init) ?? term.lowercased()
+        let snippetLower = snippet.lowercased()
+        guard let range = snippetLower.range(of: lowerTerm) else { return attributed }
+        let lower = snippet.distance(from: snippet.startIndex, to: range.lowerBound)
+        let length = snippet.distance(from: range.lowerBound, to: range.upperBound)
+        let attrStart = attributed.index(attributed.startIndex, offsetByCharacters: lower)
+        let attrEnd = attributed.index(attrStart, offsetByCharacters: length)
+        if attrEnd <= attributed.endIndex {
+            attributed[attrStart..<attrEnd].foregroundColor = AppTheme.Colors.textPrimary
+            attributed[attrStart..<attrEnd].font = AppTheme.Typography.captionSecondary.weight(.semibold)
+            attributed[attrStart..<attrEnd].backgroundColor = AppTheme.Colors.accentPrimary.opacity(0.25)
+        }
+        return attributed
+    }
+
+    var body: some View {
+        Text(attributed)
+            .font(AppTheme.Typography.captionSecondary)
+            .lineLimit(2)
+            .padding(.bottom, 4)
     }
 }

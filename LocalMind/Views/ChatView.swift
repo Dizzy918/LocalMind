@@ -40,6 +40,9 @@ struct ChatView: View {
     // Draft Recovery
     @State private var draftSaveTask: Task<Void, Never>?
 
+    // System prompt editor
+    @State private var showingSystemPromptEditor = false
+
     @FocusState private var isInputFocused: Bool
     
     var body: some View {
@@ -215,9 +218,29 @@ struct ChatView: View {
             .fixedSize()
             .disabled(conversation.messages.isEmpty)
             .help("Export conversation")
+
+            Button {
+                showingSystemPromptEditor = true
+            } label: {
+                Image(systemName: conversation.systemPromptOverride != nil ? "person.crop.circle.badge.checkmark" : "person.crop.circle")
+                    .font(.system(size: 14))
+                    .foregroundStyle(conversation.systemPromptOverride != nil ? AppTheme.Colors.accentPrimary : AppTheme.Colors.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .help(conversation.systemPromptOverride != nil ? "Custom system prompt set" : "Set custom system prompt for this conversation")
         }
         .padding(.horizontal, AppTheme.Spacing.xl)
         .padding(.vertical, AppTheme.Spacing.sm)
+        .sheet(isPresented: $showingSystemPromptEditor) {
+            SystemPromptEditor(
+                initial: conversation.systemPromptOverride ?? "",
+                onSave: { newValue in
+                    conversation.systemPromptOverride = newValue.isEmpty ? nil : newValue
+                    showingSystemPromptEditor = false
+                },
+                onCancel: { showingSystemPromptEditor = false }
+            )
+        }
     }
 
     /// Hybrid token estimate: word count × 1.33 for natural language,
@@ -669,6 +692,11 @@ struct ChatView: View {
            let customTool = dataStore.customTools.first(where: { $0.id == customToolID }) {
             systemPrompt = customTool.systemPrompt
         }
+
+        // Per-conversation override wins over both global default and custom tool.
+        if let override = conversation.systemPromptOverride, !override.isEmpty {
+            systemPrompt = override
+        }
         
         // Apply context limit
         let contextLimit = UserDefaults.standard.integer(forKey: "contextMessageLimit")
@@ -932,12 +960,19 @@ struct ChatView: View {
           <meta charset="utf-8">
           <title>\(escapedTitle)</title>
           <style>
-            body { font-family: -apple-system, system-ui, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 20px; color: #1d1d1f; line-height: 1.6; }
-            h1 { font-weight: 600; }
-            .message { margin: 24px 0; }
+            /* Force light, print-friendly styling regardless of the renderer's
+               color scheme so exported PDFs are readable on paper. */
+            :root { color-scheme: light; }
+            body { font-family: -apple-system, system-ui, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 20px; background: #ffffff; color: #1d1d1f; line-height: 1.6; }
+            h1 { font-weight: 600; color: #000; }
+            .message { margin: 24px 0; page-break-inside: avoid; }
             .role { font-size: 13px; font-weight: 600; color: #6e6e73; margin-bottom: 4px; }
-            .user .content { background: rgba(0, 122, 255, 0.08); padding: 12px 16px; border-radius: 12px; }
-            .assistant .content { padding: 4px 0; }
+            .user .content { background: #f0f3f9; padding: 12px 16px; border-radius: 12px; color: #1d1d1f; }
+            .assistant .content { padding: 4px 0; color: #1d1d1f; }
+            @media print {
+              body { margin: 0; padding: 24px; }
+              .message { page-break-inside: avoid; }
+            }
           </style>
         </head>
         <body>
@@ -1084,3 +1119,54 @@ final class PDFExportCoordinator: NSObject, WKNavigationDelegate {
     }
 }
 #endif
+
+struct SystemPromptEditor: View {
+    @State private var text: String
+    let onSave: (String) -> Void
+    let onCancel: () -> Void
+
+    init(initial: String, onSave: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
+        _text = State(initialValue: initial)
+        self.onSave = onSave
+        self.onCancel = onCancel
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("System Prompt Override")
+                        .font(AppTheme.Typography.headline)
+                    Text("Leave empty to use the global default. Saves with this conversation only.")
+                        .font(AppTheme.Typography.captionSecondary)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            TextEditor(text: $text)
+                .font(.system(size: 13))
+                .padding(8)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(AppTheme.Colors.backgroundSecondary)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(AppTheme.Colors.border, lineWidth: 1)
+                )
+            HStack {
+                Button("Reset to default") { text = "" }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Cancel", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Save") { onSave(text.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(AppTheme.Spacing.lg)
+        .frame(width: 520, height: 420)
+    }
+}

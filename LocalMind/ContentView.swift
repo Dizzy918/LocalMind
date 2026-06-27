@@ -129,6 +129,8 @@ struct ContentView: View {
         }
     }
     
+    @State private var draftConversation: Conversation?
+
     @ViewBuilder
     private var detailView: some View {
         if let id = selectedConversationID,
@@ -137,17 +139,32 @@ struct ContentView: View {
                 aiManager: aiManager,
                 dataStore: dataStore,
                 conversation: Binding(
-                    get: {
-                        // Always look up by ID, not by captured index.
-                        // The array can shift when conversations are added or deleted.
-                        dataStore.conversations.first(where: { $0.id == id }) ?? Conversation()
-                    },
+                    get: { dataStore.conversations.first(where: { $0.id == id }) ?? Conversation() },
                     set: { dataStore.saveConversation($0) }
                 )
             )
-            .id(id) // Force view recreation when conversation changes
+            .id(id)
+        } else if let draft = draftConversation, draft.id == selectedConversationID {
+            // Empty draft — held in @State so it doesn't pollute the sidebar.
+            // The setter persists the moment the conversation gains any messages.
+            ChatView(
+                aiManager: aiManager,
+                dataStore: dataStore,
+                conversation: Binding(
+                    get: { draftConversation ?? draft },
+                    set: { updated in
+                        if updated.messages.isEmpty {
+                            draftConversation = updated
+                        } else {
+                            dataStore.saveConversation(updated)
+                            draftConversation = nil
+                        }
+                    }
+                )
+            )
+            .id(draft.id)
         } else {
-            let initialConversation = {
+            let initialConversation: Conversation = {
                 switch selectedSelection {
                 case .chat:
                     return Conversation(toolType: .chat)
@@ -155,16 +172,22 @@ struct ContentView: View {
                     return Conversation(toolType: .chat, customToolID: id)
                 }
             }()
-            
+
             ChatView(
                 aiManager: aiManager,
                 dataStore: dataStore,
                 conversation: .constant(initialConversation)
             )
-            .onAppear { startNewConversation() }
+            .onAppear {
+                draftConversation = initialConversation
+                selectedConversationID = initialConversation.id
+            }
         }
     }
     
+    /// Creates the conversation in-memory only. It's persisted by the binding
+    /// setter on ChatView the moment the first message lands, so the sidebar
+    /// stays clean of empty drafts until the user actually engages.
     private func startNewConversation() {
         let newConversation: Conversation
         switch selectedSelection {
@@ -173,7 +196,6 @@ struct ContentView: View {
         case .customTool(let id):
             newConversation = Conversation(toolType: .chat, customToolID: id)
         }
-        dataStore.saveConversation(newConversation)
         selectedConversationID = newConversation.id
     }
     
