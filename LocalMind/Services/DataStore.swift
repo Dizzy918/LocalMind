@@ -199,6 +199,17 @@ final class DataStore {
             .sorted { $0.updatedAt > $1.updatedAt }
     }
 
+    /// Merges `source` into `target` by appending source's messages onto target, then deletes source.
+    /// Messages are ordered: target's existing messages first, then source's messages sorted by timestamp.
+    func mergeConversation(_ source: Conversation, into target: Conversation) {
+        guard source.id != target.id else { return }
+        var merged = target
+        merged.messages.append(contentsOf: source.messages)
+        merged.updatedAt = Date()
+        saveConversation(merged)
+        deleteConversation(source)
+    }
+
     func togglePin(_ conversation: Conversation) {
         var updated = conversation
         updated.isPinned.toggle()

@@ -271,6 +271,26 @@ struct SidebarView: View {
 
                                 Divider()
 
+                                Menu {
+                                    let candidates = conversations.filter { $0.id != conversation.id }
+                                    if candidates.isEmpty {
+                                        Text("No other conversations")
+                                    } else {
+                                        ForEach(candidates) { target in
+                                            Button(target.title) {
+                                                dataStore.mergeConversation(conversation, into: target)
+                                                if selectedConversationID == conversation.id {
+                                                    selectedConversationID = target.id
+                                                }
+                                            }
+                                        }
+                                    }
+                                } label: {
+                                    Label("Merge into…", systemImage: "arrow.triangle.merge")
+                                }
+
+                                Divider()
+
                                 Button(role: .destructive) {
                                     dataStore.deleteConversation(conversation)
                                     if selectedConversationID == conversation.id {

@@ -91,8 +91,9 @@ struct SettingsView: View {
             }
             
             Section("Hotkeys") {
-                Toggle("Enable Global Shortcut (Option + Space)", isOn: $enableGlobalShortcut)
-                Text("Summons the LocalMind floating bubble from anywhere. Note: Currently this shortcut requires accessibility permissions.")
+                Toggle("Enable Global Shortcut", isOn: $enableGlobalShortcut)
+                HotkeyRecorderRow()
+                Text("Summons the LocalMind floating bubble from anywhere. Requires accessibility permissions.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -363,4 +364,83 @@ struct SettingsView: View {
         }
         .padding(AppTheme.Spacing.xl)
     }
+}
+
+struct HotkeyRecorderRow: View {
+    @State private var isRecording = false
+    @State private var currentDescription: String = HotkeyManager.shared.currentShortcutDescription()
+
+    var body: some View {
+        HStack {
+            Text("Global Shortcut")
+            Spacer()
+            if isRecording {
+                ShortcutRecorder { keyCode, modifiers in
+                    HotkeyManager.shared.updateHotkey(keyCode: keyCode, modifiers: modifiers)
+                    currentDescription = HotkeyManager.shared.currentShortcutDescription()
+                    isRecording = false
+                }
+                .frame(width: 140, height: 22)
+            } else {
+                Button(currentDescription) { isRecording = true }
+                    .buttonStyle(.bordered)
+            }
+            Button("Reset") {
+                HotkeyManager.shared.resetHotkey()
+                currentDescription = HotkeyManager.shared.currentShortcutDescription()
+                isRecording = false
+            }
+            .buttonStyle(.borderless)
+            .font(.caption)
+        }
+    }
+}
+
+struct ShortcutRecorder: NSViewRepresentable {
+    var onCapture: (UInt32, UInt32) -> Void
+
+    func makeNSView(context: Context) -> ShortcutRecorderHost {
+        let host = ShortcutRecorderHost()
+        host.onCapture = onCapture
+        return host
+    }
+
+    func updateNSView(_ nsView: ShortcutRecorderHost, context: Context) {
+        nsView.onCapture = onCapture
+        DispatchQueue.main.async {
+            nsView.window?.makeFirstResponder(nsView.recorder)
+        }
+    }
+}
+
+final class ShortcutRecorderHost: NSView {
+    let recorder = ShortcutRecorderView()
+    var onCapture: ((UInt32, UInt32) -> Void)? {
+        didSet { recorder.onCapture = onCapture }
+    }
+
+    init() {
+        super.init(frame: .zero)
+        let label = NSTextField(labelWithString: "Press a shortcut…")
+        label.font = .systemFont(ofSize: 11)
+        label.textColor = .secondaryLabelColor
+        label.translatesAutoresizingMaskIntoConstraints = false
+        recorder.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(recorder)
+        recorder.addSubview(label)
+        recorder.wantsLayer = true
+        recorder.layer?.borderColor = NSColor.controlAccentColor.cgColor
+        recorder.layer?.borderWidth = 1
+        recorder.layer?.cornerRadius = 4
+        NSLayoutConstraint.activate([
+            recorder.topAnchor.constraint(equalTo: topAnchor),
+            recorder.bottomAnchor.constraint(equalTo: bottomAnchor),
+            recorder.leadingAnchor.constraint(equalTo: leadingAnchor),
+            recorder.trailingAnchor.constraint(equalTo: trailingAnchor)
+        ])
+        label.centerXAnchor.constraint(equalTo: recorder.centerXAnchor).isActive = true
+        label.centerYAnchor.constraint(equalTo: recorder.centerYAnchor).isActive = true
+    }
+
+    required init?(coder: NSCoder) { nil }
 }

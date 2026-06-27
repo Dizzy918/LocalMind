@@ -10,6 +10,7 @@ import UniformTypeIdentifiers
 #if os(macOS)
 import AppKit
 import PDFKit
+import WebKit
 #endif
 
 /// Full chat interface with streaming AI responses
@@ -198,6 +199,11 @@ struct ChatView: View {
                     exportChat(as: .html)
                 } label: {
                     Label("HTML (.html)", systemImage: "globe")
+                }
+                Button {
+                    exportChat(as: .pdf)
+                } label: {
+                    Label("PDF (.pdf)", systemImage: "doc.richtext")
                 }
             } label: {
                 Image(systemName: "square.and.arrow.up")
@@ -806,7 +812,7 @@ struct ChatView: View {
     // MARK: - Export
 
     enum ExportFormat {
-        case markdown, json, plainText, html
+        case markdown, json, plainText, html, pdf
 
         var fileExtension: String {
             switch self {
@@ -814,6 +820,7 @@ struct ChatView: View {
             case .json: return "json"
             case .plainText: return "txt"
             case .html: return "html"
+            case .pdf: return "pdf"
             }
         }
 
@@ -823,35 +830,46 @@ struct ChatView: View {
             case .json: return .json
             case .plainText: return .plainText
             case .html: return .html
+            case .pdf: return .pdf
             }
         }
     }
 
     private func exportChat(as format: ExportFormat) {
-        let content: String
-        switch format {
-        case .markdown: content = renderMarkdown()
-        case .json: content = renderJSON()
-        case .plainText: content = renderPlainText()
-        case .html: content = renderHTML()
-        }
-
-        let savePanel = NSSavePanel()
-        savePanel.allowedContentTypes = [format.utType]
         let safeTitle = conversation.title
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: " ", with: "_")
+
+        let savePanel = NSSavePanel()
+        savePanel.allowedContentTypes = [format.utType]
         savePanel.nameFieldStringValue = "\(safeTitle).\(format.fileExtension)"
 
         savePanel.begin { response in
-            if response == .OK, let url = savePanel.url {
-                do {
-                    try content.write(to: url, atomically: true, encoding: .utf8)
-                } catch {
-                    print("Failed to save chat: \(error.localizedDescription)")
+            guard response == .OK, let url = savePanel.url else { return }
+            if format == .pdf {
+                self.exportPDF(to: url)
+            } else {
+                let content: String
+                switch format {
+                case .markdown: content = self.renderMarkdown()
+                case .json: content = self.renderJSON()
+                case .plainText: content = self.renderPlainText()
+                case .html: content = self.renderHTML()
+                case .pdf: return
                 }
+                try? content.write(to: url, atomically: true, encoding: .utf8)
             }
         }
+    }
+
+    private func exportPDF(to url: URL) {
+        let html = renderHTML()
+        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 800, height: 1100))
+        let coordinator = PDFExportCoordinator(targetURL: url)
+        webView.navigationDelegate = coordinator
+        // Retain the coordinator until the navigation completes
+        objc_setAssociatedObject(webView, &PDFExportCoordinator.associationKey, coordinator, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        webView.loadHTMLString(html, baseURL: nil)
     }
 
     private func renderMarkdown() -> String {
@@ -1034,3 +1052,26 @@ private func optimizeImageForAI(_ image: NSImage) -> Data? {
     // Compress it aggressively (0.6 is plenty for AI extraction)
     return rep.representation(using: .jpeg, properties: [.compressionFactor: 0.6])
 }
+
+#if os(macOS)
+final class PDFExportCoordinator: NSObject, WKNavigationDelegate {
+    static var associationKey: UInt8 = 0
+    let targetURL: URL
+
+    init(targetURL: URL) {
+        self.targetURL = targetURL
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        let config = WKPDFConfiguration()
+        webView.createPDF(configuration: config) { [targetURL] result in
+            switch result {
+            case .success(let data):
+                try? data.write(to: targetURL)
+            case .failure(let error):
+                print("PDF export failed: \(error.localizedDescription)")
+            }
+        }
+    }
+}
+#endif
