@@ -23,6 +23,7 @@ struct LocalMindApp: App {
                 .background(AppTheme.Colors.backgroundPrimary)
                 .preferredColorScheme(isDarkMode ? .dark : .light)
                 .onAppear {
+                    applyAppearance(isDarkMode)
                     BubbleWindowController.shared.setup(aiManager: sharedAIManager, dataStore: sharedDataStore)
 
                     HotkeyManager.shared.onHotkeyPressed = {
@@ -32,6 +33,9 @@ struct LocalMindApp: App {
                         HotkeyManager.shared.registerHotkey()
                         HotkeyManager.shared.requestPermissions()
                     }
+                }
+                .onChange(of: isDarkMode) { _, newValue in
+                    applyAppearance(newValue)
                 }
                 .onChange(of: enableGlobalShortcut) { _, isEnabled in
                     if isEnabled {
@@ -60,5 +64,13 @@ struct LocalMindApp: App {
                 .help("LocalMind")
         }
         .menuBarExtraStyle(.window)
+    }
+
+    /// Sync `NSApp.appearance` with the user's preference so the dynamic
+    /// NSColors in Theme.swift (which gate on `NSColor.darkAqua`) match
+    /// SwiftUI's environment. Without this, MenuBarExtra and floating
+    /// panels render in the system appearance instead of the app's.
+    private func applyAppearance(_ dark: Bool) {
+        NSApp.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
     }
 }
