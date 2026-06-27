@@ -29,6 +29,7 @@ struct SidebarView: View {
     @State private var searchQuery = ""
     @State private var isSearching = false
     @FocusState private var isSearchFocused: Bool
+    @State private var mergeSource: Conversation?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -57,8 +58,22 @@ struct SidebarView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(AppTheme.Colors.sidebarBackground)
+        .sheet(item: $mergeSource) { source in
+            MergeTargetPicker(
+                source: source,
+                allConversations: dataStore.conversations,
+                onPick: { target in
+                    dataStore.mergeConversation(source, into: target)
+                    if selectedConversationID == source.id {
+                        selectedConversationID = target.id
+                    }
+                    mergeSource = nil
+                },
+                onCancel: { mergeSource = nil }
+            )
+        }
     }
-    
+
     // MARK: - App Header
     
     private var appHeader: some View {
@@ -271,20 +286,8 @@ struct SidebarView: View {
 
                                 Divider()
 
-                                Menu {
-                                    let candidates = conversations.filter { $0.id != conversation.id }
-                                    if candidates.isEmpty {
-                                        Text("No other conversations")
-                                    } else {
-                                        ForEach(candidates) { target in
-                                            Button(target.title) {
-                                                dataStore.mergeConversation(conversation, into: target)
-                                                if selectedConversationID == conversation.id {
-                                                    selectedConversationID = target.id
-                                                }
-                                            }
-                                        }
-                                    }
+                                Button {
+                                    mergeSource = conversation
                                 } label: {
                                     Label("Merge into…", systemImage: "arrow.triangle.merge")
                                 }
@@ -456,5 +459,77 @@ struct HoverIconLabel: View {
                     isHovering = hovering
                 }
             }
+    }
+}
+
+struct MergeTargetPicker: View {
+    let source: Conversation
+    let allConversations: [Conversation]
+    let onPick: (Conversation) -> Void
+    let onCancel: () -> Void
+
+    private var candidates: [Conversation] {
+        allConversations
+            .filter { $0.id != source.id && !$0.messages.isEmpty }
+            .sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Merge Conversation")
+                        .font(AppTheme.Typography.headline)
+                    Text("Append messages from \"\(source.title)\" into another conversation. The source will be deleted.")
+                        .font(AppTheme.Typography.captionSecondary)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Cancel", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+            }
+
+            Divider()
+
+            if candidates.isEmpty {
+                Text("No other conversations to merge into.")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding()
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 4) {
+                        ForEach(candidates) { target in
+                            Button {
+                                onPick(target)
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(target.title)
+                                            .font(AppTheme.Typography.body)
+                                            .foregroundStyle(AppTheme.Colors.textPrimary)
+                                        Text("\(target.messages.count) messages • \(target.updatedAt.formatted(date: .abbreviated, time: .shortened))")
+                                            .font(AppTheme.Typography.captionSecondary)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "arrow.right")
+                                        .foregroundStyle(.secondary)
+                                }
+                                .padding(AppTheme.Spacing.sm)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(AppTheme.Colors.backgroundSecondary.opacity(0.5))
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        .padding(AppTheme.Spacing.lg)
+        .frame(width: 480, height: 420)
     }
 }

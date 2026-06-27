@@ -450,16 +450,18 @@ struct ChatView: View {
                     Button {
                         if isStreaming { stopStreaming() } else { sendMessage() }
                     } label: {
-                        Image(systemName: isStreaming ? "stop.fill" : "arrow.up")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(canSend || isStreaming ? .white : AppTheme.Colors.textTertiary)
-                            .frame(width: 30, height: 30)
-                            .background {
-                                Circle()
-                                    .fill(canSend || isStreaming ? AppTheme.Colors.accentPrimary : AppTheme.Colors.backgroundTertiary)
-                            }
+                        ZStack {
+                            Circle()
+                                .fill(canSend || isStreaming ? AppTheme.Colors.accentPrimary : AppTheme.Colors.backgroundTertiary)
+                            Image(systemName: isStreaming ? "stop.fill" : "arrow.up")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(canSend || isStreaming ? .white : AppTheme.Colors.textTertiary)
+                        }
+                        .frame(width: 30, height: 30)
+                        .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
+                    .focusable(false)
                     .disabled(!canSend && !isStreaming)
                     .keyboardShortcut(.return, modifiers: .command)
                     .symbolEffect(.bounce, value: isStreaming)
