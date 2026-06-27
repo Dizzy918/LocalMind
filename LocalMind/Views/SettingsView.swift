@@ -12,6 +12,7 @@ import UniformTypeIdentifiers
 struct SettingsView: View {
     let aiManager: AIServiceManager
     let dataStore: DataStore
+    let mcpService: MCPService?
     
     @State private var selectedTab: SettingsTab = .general
     @State private var importStatus: String = ""
@@ -30,6 +31,7 @@ struct SettingsView: View {
         case chat = "Chat Options"
         case data = "Data & Privacy"
         case customTools = "Custom Tools"
+        case mcp = "MCP Servers"
         case about = "About"
         
         var icon: String {
@@ -39,6 +41,7 @@ struct SettingsView: View {
             case .chat: return "message"
             case .data: return "lock.shield"
             case .customTools: return "hammer"
+            case .mcp: return "server.rack"
             case .about: return "info.circle"
             }
         }
@@ -49,22 +52,28 @@ struct SettingsView: View {
             generalTab
                 .tabItem { Label(SettingsTab.general.rawValue, systemImage: SettingsTab.general.icon) }
                 .tag(SettingsTab.general)
-                
+            
             providersTab
                 .tabItem { Label(SettingsTab.providers.rawValue, systemImage: SettingsTab.providers.icon) }
                 .tag(SettingsTab.providers)
-                
+            
             chatTab
                 .tabItem { Label(SettingsTab.chat.rawValue, systemImage: SettingsTab.chat.icon) }
                 .tag(SettingsTab.chat)
-                
+            
             dataTab
                 .tabItem { Label(SettingsTab.data.rawValue, systemImage: SettingsTab.data.icon) }
                 .tag(SettingsTab.data)
-                
+            
             CustomToolSettingsView(dataStore: dataStore)
                 .tabItem { Label(SettingsTab.customTools.rawValue, systemImage: SettingsTab.customTools.icon) }
                 .tag(SettingsTab.customTools)
+            
+            if let mcpService {
+                MCPSettingsView(mcpService: mcpService)
+                    .tabItem { Label("MCP Servers", systemImage: "server.rack") }
+                    .tag(SettingsTab.mcp)
+            }
             
             aboutTab
                 .tabItem { Label(SettingsTab.about.rawValue, systemImage: SettingsTab.about.icon) }

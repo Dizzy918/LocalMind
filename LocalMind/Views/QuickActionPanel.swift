@@ -334,10 +334,11 @@ struct QuickActionPanel: View {
                     messages: history,
                     systemPrompt: "You are a quick menu bar assistant. Provide very concise, direct answers. Do not use filler words.",
                     modelOverride: nil,
-                    parameters: aiManager.aiParameters
+                    parameters: aiManager.aiParameters,
+                    tools: nil
                 ) {
                     if Task.isCancelled { break }
-                    resultText += chunk
+                    if case .text(let t) = chunk { resultText += t }
                 }
                 
                 // When finished generating, save the AI's response to the conversation

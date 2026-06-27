@@ -1,13 +1,45 @@
 //
-//  AIServiceProtocol.swift
-//  LocalMind
-//
-//  Created by Radoslav Slavov on 20.06.26.
-//
+ //  AIServiceProtocol.swift
+ //  LocalMind
+ //
+ //  Created by Radoslav Slavov on 20.06.26.
+ //
+ 
+ import Foundation
+ 
+ // MARK: - Tool Support
+ 
+ /// Represents a tool that can be called by the AI model.
+struct AITool: Sendable, Identifiable {
+    let id: String
+    let name: String
+    let description: String
+    let inputSchema: AnyCodable
+}
 
-import Foundation
+/// Represents a tool call made by the AI model.
+struct AIToolCall: Codable, Sendable, Identifiable {
+    let id: String
+    let name: String
+    let arguments: String
+}
 
-// MARK: - AI Backend
+/// Represents the result of a tool call.
+struct AIToolResult: Codable, Sendable, Identifiable {
+    let id: String
+    let toolCallId: String
+    let content: String
+    let isError: Bool
+
+    init(id: String = UUID().uuidString, toolCallId: String, content: String, isError: Bool = false) {
+        self.id = id
+        self.toolCallId = toolCallId
+        self.content = content
+        self.isError = isError
+    }
+}
+ 
+ // MARK: - AI Backend
 
 /// Represents the available AI backends that the app can connect to.
 enum AIBackend: String, Sendable, CaseIterable {
@@ -51,8 +83,9 @@ protocol AIServiceProtocol: Sendable {
     ///   - systemPrompt: An optional system prompt to prepend.
     ///   - modelOverride: An optional model identifier to use instead of the globally selected one.
     ///   - parameters: Optional parameters (temperature, maxTokens, contextLength) for generation.
-    /// - Returns: An `AsyncThrowingStream` that yields incremental text chunks.
-    func streamChat(messages: [ChatMessage], systemPrompt: String?, modelOverride: String?, parameters: AIParameters?) -> AsyncThrowingStream<String, Error>
+    ///   - tools: Optional tools available for the model to call.
+    /// - Returns: An `AsyncThrowingStream` that yields incremental text chunks or tool calls.
+    func streamChat(messages: [ChatMessage], systemPrompt: String?, modelOverride: String?, parameters: AIParameters?, tools: [AITool]?) -> AsyncThrowingStream<AIStreamChunk, Error>
 
     /// Generate a single complete response (non-streaming).
     /// - Parameters:
@@ -60,8 +93,17 @@ protocol AIServiceProtocol: Sendable {
     ///   - systemPrompt: An optional system prompt to prepend.
     ///   - modelOverride: An optional model identifier to use instead of the globally selected one.
     ///   - parameters: Optional parameters for generation.
+    ///   - tools: Optional tools available for the model to call.
     /// - Returns: The full generated response text.
-    func generateOnce(prompt: String, systemPrompt: String?, modelOverride: String?, parameters: AIParameters?) async throws -> String
+    func generateOnce(prompt: String, systemPrompt: String?, modelOverride: String?, parameters: AIParameters?, tools: [AITool]?) async throws -> String
+}
+
+/// A chunk of streaming response from an AI model.
+enum AIStreamChunk: Sendable {
+    case text(String)
+    case toolCall(AIToolCall)
+    case toolCalls([AIToolCall])
+    case done
 }
 
 // MARK: - AI Service Error
@@ -104,23 +146,22 @@ nonisolated enum AIServiceError: Error, LocalizedError {
 
 extension AIServiceProtocol {
     /// Stream chat without a system prompt or model override.
-    func streamChat(messages: [ChatMessage]) -> AsyncThrowingStream<String, Error> {
-        streamChat(messages: messages, systemPrompt: nil, modelOverride: nil, parameters: nil)
+    func streamChat(messages: [ChatMessage]) -> AsyncThrowingStream<AIStreamChunk, Error> {
+        streamChat(messages: messages, systemPrompt: nil, modelOverride: nil, parameters: nil, tools: nil)
     }
 
     /// Generate a single response without a system prompt or model override.
     func generateOnce(prompt: String) async throws -> String {
-        try await generateOnce(prompt: prompt, systemPrompt: nil, modelOverride: nil, parameters: nil)
+        try await generateOnce(prompt: prompt, systemPrompt: nil, modelOverride: nil, parameters: nil, tools: nil)
     }
-    
+
     /// Stream chat with a system prompt but no model override.
-    func streamChat(messages: [ChatMessage], systemPrompt: String?) -> AsyncThrowingStream<String, Error> {
-        streamChat(messages: messages, systemPrompt: systemPrompt, modelOverride: nil, parameters: nil)
+    func streamChat(messages: [ChatMessage], systemPrompt: String?) -> AsyncThrowingStream<AIStreamChunk, Error> {
+        streamChat(messages: messages, systemPrompt: systemPrompt, modelOverride: nil, parameters: nil, tools: nil)
     }
 
     /// Generate a single response with a system prompt but no model override.
     func generateOnce(prompt: String, systemPrompt: String?) async throws -> String {
-        try await generateOnce(prompt: prompt, systemPrompt: systemPrompt, modelOverride: nil, parameters: nil)
+        try await generateOnce(prompt: prompt, systemPrompt: systemPrompt, modelOverride: nil, parameters: nil, tools: nil)
     }
 }
-

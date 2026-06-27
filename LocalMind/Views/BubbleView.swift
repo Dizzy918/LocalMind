@@ -175,8 +175,8 @@ struct BubbleView: View {
         
         Task { @MainActor in
             do {
-                for try await chunk in service.streamChat(messages: targetConversation.messages, systemPrompt: "You are LocalMind.", modelOverride: nil, parameters: aiManager.aiParameters) {
-                    streamingContent += chunk
+                for try await chunk in service.streamChat(messages: targetConversation.messages, systemPrompt: "You are LocalMind.", modelOverride: nil, parameters: aiManager.aiParameters, tools: nil) {
+                    if case .text(let t) = chunk { streamingContent += t }
                 }
                 
                 let aiMessage = ChatMessage(role: .assistant, content: streamingContent)

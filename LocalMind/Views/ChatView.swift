@@ -594,7 +594,8 @@ struct ChatView: View {
                     prompt: prompt,
                     systemPrompt: "You are a concise title generator. Output only the title, nothing else. No quotes, no explanation.",
                     modelOverride: nil,
-                    parameters: aiManager.aiParameters
+                    parameters: aiManager.aiParameters,
+                    tools: nil
                 )
 
                 var title = response
@@ -642,7 +643,8 @@ struct ChatView: View {
                     prompt: prompt,
                     systemPrompt: "You output exactly one emoji. No words, no punctuation, just one emoji.",
                     modelOverride: nil,
-                    parameters: aiManager.aiParameters
+                    parameters: aiManager.aiParameters,
+                    tools: nil
                 )
                 
                 // Extract the first emoji from the response
@@ -704,9 +706,26 @@ struct ChatView: View {
         let recentMessages = Array(conversation.messages.suffix(limit))
         
         do {
-            for try await chunk in service.streamChat(messages: recentMessages, systemPrompt: systemPrompt, modelOverride: nil, parameters: aiManager.aiParameters) {
+            let availableTools = aiManager.getAvailableTools()
+            let tools = availableTools.isEmpty ? nil : availableTools
+            var pendingToolCalls: [AIToolCall] = []
+            for try await chunk in service.streamChat(messages: recentMessages, systemPrompt: systemPrompt, modelOverride: nil, parameters: aiManager.aiParameters, tools: tools) {
                 if Task.isCancelled { break }
-                streamingContent += chunk
+                switch chunk {
+                case .text(let text):
+                    streamingContent += text
+                case .toolCall(let call):
+                    pendingToolCalls.append(call)
+                case .toolCalls(let calls):
+                    pendingToolCalls.append(contentsOf: calls)
+                case .done:
+                    break
+                }
+            }
+            if !pendingToolCalls.isEmpty {
+                await aiManager.executeToolCalls(pendingToolCalls) { name, result in
+                    streamingContent += "\n\n_🔧 \(name): \(result)_"
+                }
             }
             
             if !streamingContent.isEmpty {

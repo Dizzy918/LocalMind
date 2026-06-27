@@ -63,8 +63,9 @@ actor OpenAICompatibleService: AIServiceProtocol {
         messages: [ChatMessage],
         systemPrompt: String?,
         modelOverride: String?,
-        parameters: AIParameters?
-    ) -> AsyncThrowingStream<String, Error> {
+        parameters: AIParameters?,
+        tools: [AITool]?
+    ) -> AsyncThrowingStream<AIStreamChunk, Error> {
         let baseURL = self.baseURL
 
         return AsyncThrowingStream { continuation in
@@ -113,7 +114,23 @@ actor OpenAICompatibleService: AIServiceProtocol {
                         "messages": apiMessages,
                         "stream": true,
                     ]
-                    
+
+                    // Add tools if provided
+                    if let tools = tools, !tools.isEmpty {
+                        let openAITools = tools.map { tool -> [String: Any] in
+                            [
+                                "type": "function",
+                                "function": [
+                                    "name": tool.name,
+                                    "description": tool.description,
+                                    "parameters": tool.inputSchema
+                                ]
+                            ]
+                        }
+                        body["tools"] = openAITools
+                        body["tool_choice"] = "auto"
+                    }
+
                     if let params = parameters {
                         body["temperature"] = params.temperature
                         if let topP = params.topP {
@@ -123,7 +140,7 @@ actor OpenAICompatibleService: AIServiceProtocol {
                             body["max_tokens"] = maxTokens
                         }
                     }
-                    
+
                     request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)
@@ -144,6 +161,7 @@ actor OpenAICompatibleService: AIServiceProtocol {
 
                         // Stream termination signal
                         if payload == "[DONE]" {
+                            continuation.yield(.done)
                             break
                         }
 
@@ -153,8 +171,19 @@ actor OpenAICompatibleService: AIServiceProtocol {
                             continue
                         }
 
+                        // Handle tool calls
+                        if let toolCalls = chunk.choices.first?.delta.toolCalls {
+                            for toolCall in toolCalls {
+                                continuation.yield(.toolCall(AIToolCall(
+                                    id: toolCall.id ?? UUID().uuidString,
+                                    name: toolCall.function?.name ?? "",
+                                    arguments: toolCall.function?.arguments ?? "{}"
+                                )))
+                            }
+                        }
+
                         if let content = chunk.choices.first?.delta.content, !content.isEmpty {
-                            continuation.yield(content)
+                            continuation.yield(.text(content))
                         }
                     }
 
@@ -170,11 +199,13 @@ actor OpenAICompatibleService: AIServiceProtocol {
         }
     }
 
-    nonisolated func generateOnce(prompt: String, systemPrompt: String?, modelOverride: String?, parameters: AIParameters?) async throws -> String {
+    nonisolated func generateOnce(prompt: String, systemPrompt: String?, modelOverride: String?, parameters: AIParameters?, tools: [AITool]?) async throws -> String {
         var result = ""
         let messages = [ChatMessage(role: .user, content: prompt)]
-        for try await chunk in streamChat(messages: messages, systemPrompt: systemPrompt, modelOverride: modelOverride, parameters: parameters) {
-            result += chunk
+        for try await chunk in streamChat(messages: messages, systemPrompt: systemPrompt, modelOverride: modelOverride, parameters: parameters, tools: tools) {
+            if case .text(let text) = chunk {
+                result += text
+            }
         }
         return result
     }
@@ -202,6 +233,22 @@ nonisolated struct OpenAIStreamChunk: Decodable, Sendable {
     nonisolated struct OpenAIStreamDelta: Decodable, Sendable {
         let role: String?
         let content: String?
+        let toolCalls: [OpenAIToolCall]?
+
+        enum CodingKeys: String, CodingKey {
+            case role, content, toolCalls = "tool_calls"
+        }
+    }
+
+    nonisolated struct OpenAIToolCall: Decodable, Sendable {
+        let id: String?
+        let type: String?
+        let function: OpenAIFunctionCall?
+    }
+
+    nonisolated struct OpenAIFunctionCall: Decodable, Sendable {
+        let name: String?
+        let arguments: String?
     }
 }
 

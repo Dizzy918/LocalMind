@@ -67,8 +67,9 @@ final class AppleFoundationModelService: AIServiceProtocol, @unchecked Sendable 
         messages: [ChatMessage],
         systemPrompt: String?,
         modelOverride: String?,
-        parameters: AIParameters?
-    ) -> AsyncThrowingStream<String, Error> {
+        parameters: AIParameters?,
+        tools: [AITool]?
+    ) -> AsyncThrowingStream<AIStreamChunk, Error> {
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -83,11 +84,12 @@ final class AppleFoundationModelService: AIServiceProtocol, @unchecked Sendable 
                         let currentText = partialResponse.content
                         if currentText.count > lastLength {
                             let newContent = String(currentText.dropFirst(lastLength))
-                            continuation.yield(newContent)
+                            continuation.yield(.text(newContent))
                             lastLength = currentText.count
                         }
                     }
 
+                    continuation.yield(.done)
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -102,7 +104,7 @@ final class AppleFoundationModelService: AIServiceProtocol, @unchecked Sendable 
 
     // MARK: - Single Generation
 
-    func generateOnce(prompt: String, systemPrompt: String?, modelOverride: String?, parameters: AIParameters?) async throws -> String {
+    func generateOnce(prompt: String, systemPrompt: String?, modelOverride: String?, parameters: AIParameters?, tools: [AITool]?) async throws -> String {
         let fullPrompt: String
         if let systemPrompt {
             fullPrompt = "\(systemPrompt)\n\n\(prompt)"
@@ -161,12 +163,13 @@ final class AppleFoundationModelService: AIServiceProtocol, @unchecked Sendable 
         messages: [ChatMessage],
         systemPrompt: String?,
         modelOverride: String?,
-        parameters: AIParameters?
-    ) -> AsyncThrowingStream<String, Error> {
+        parameters: AIParameters?,
+        tools: [AITool]?
+    ) -> AsyncThrowingStream<AIStreamChunk, Error> {
         AsyncThrowingStream { $0.finish(throwing: AIServiceError.backendUnavailable("FoundationModels not available")) }
     }
 
-    func generateOnce(prompt: String, systemPrompt: String?, modelOverride: String?, parameters: AIParameters?) async throws -> String {
+    func generateOnce(prompt: String, systemPrompt: String?, modelOverride: String?, parameters: AIParameters?, tools: [AITool]?) async throws -> String {
         throw AIServiceError.backendUnavailable("FoundationModels not available on this platform")
     }
 }

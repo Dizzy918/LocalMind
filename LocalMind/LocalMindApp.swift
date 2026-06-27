@@ -11,6 +11,7 @@ import SwiftUI
 struct LocalMindApp: App {
     @State private var sharedAIManager = AIServiceManager()
     @State private var sharedDataStore = DataStore()
+    @State private var sharedMCPService: MCPService?
     @AppStorage("isDarkMode") private var isDarkMode: Bool = true
     @AppStorage("enableGlobalShortcut") private var enableGlobalShortcut: Bool = false
 
@@ -32,6 +33,9 @@ struct LocalMindApp: App {
                 .preferredColorScheme(isDarkMode ? .dark : .light)
                 .onAppear {
                     applyAppearance(isDarkMode)
+                    let mcpService = MCPService(dataStore: sharedDataStore)
+                    sharedMCPService = mcpService
+                    sharedAIManager.setMCPService(mcpService)
                     BubbleWindowController.shared.setup(aiManager: sharedAIManager, dataStore: sharedDataStore)
 
                     HotkeyManager.shared.onHotkeyPressed = {
@@ -59,7 +63,7 @@ struct LocalMindApp: App {
         }
         
         Settings {
-            SettingsView(aiManager: sharedAIManager, dataStore: sharedDataStore)
+            SettingsView(aiManager: sharedAIManager, dataStore: sharedDataStore, mcpService: sharedMCPService)
                 .preferredColorScheme(isDarkMode ? .dark : .light)
         }
         

@@ -109,6 +109,9 @@ final class AIServiceManager {
     private var openAIService: OpenAICompatibleService?
     private var appleService: (any AIServiceProtocol)?
     private var pollingTask: Task<Void, Never>?
+    
+    /// Reference to MCP service for tool integration
+    weak var mcpService: MCPService?
 
     // MARK: - Initialization
 
@@ -123,6 +126,41 @@ final class AIServiceManager {
     
     deinit {
         pollingTask?.cancel()
+    }
+
+    /// Sets the MCP service reference for tool integration
+    func setMCPService(_ mcpService: MCPService) {
+        self.mcpService = mcpService
+    }
+
+    /// Executes a batch of tool calls via the MCP service and invokes
+    /// `onResult` for each, with a human-readable summary for chat injection.
+    func executeToolCalls(_ calls: [AIToolCall], onResult: (String, String) -> Void) async {
+        guard let mcpService else { return }
+        for call in calls {
+            do {
+                let argsData = call.arguments.data(using: .utf8) ?? Data()
+                let args = (try? JSONSerialization.jsonObject(with: argsData) as? [String: Any]) ?? [:]
+                let content = try await mcpService.callTool(name: call.name, arguments: args)
+                let textParts = content.compactMap { $0.text }.joined(separator: "\n")
+                onResult(call.name, textParts.isEmpty ? "(empty result)" : textParts)
+            } catch {
+                onResult(call.name, "Error — \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Gets available tools from MCP service for the current conversation
+    func getAvailableTools() -> [AITool] {
+        guard let mcpService = mcpService else { return [] }
+        return mcpService.availableTools.map { mcpTool in
+            AITool(
+                id: mcpTool.id,
+                name: mcpTool.name,
+                description: mcpTool.description ?? "",
+                inputSchema: mcpTool.inputSchema
+            )
+        }
     }
 
     // MARK: - Detection

@@ -49,8 +49,9 @@ actor OllamaService: AIServiceProtocol {
         messages: [ChatMessage],
         systemPrompt: String?,
         modelOverride: String?,
-        parameters: AIParameters?
-    ) -> AsyncThrowingStream<String, Error> {
+        parameters: AIParameters?,
+        tools: [AITool]?
+    ) -> AsyncThrowingStream<AIStreamChunk, Error> {
         let baseURL = self.baseURL
 
         return AsyncThrowingStream { continuation in
@@ -92,9 +93,25 @@ actor OllamaService: AIServiceProtocol {
                         "messages": ollamaMessages,
                         "stream": true,
                         // SPEED HACK: Keep the model loaded in RAM for 1 hour so follow-up chats are instantaneous
-                        "keep_alive": "1h" 
+                        "keep_alive": "1h"
                     ]
-                    
+
+                    // Add tools if provided (Ollama supports tools via the "tools" parameter)
+                    if let tools = tools, !tools.isEmpty {
+                        let ollamaTools = tools.map { tool -> [String: Any] in
+                            var toolDict: [String: Any] = [
+                                "type": "function",
+                                "function": [
+                                    "name": tool.name,
+                                    "description": tool.description,
+                                    "parameters": tool.inputSchema
+                                ]
+                            ]
+                            return toolDict
+                        }
+                        body["tools"] = ollamaTools
+                    }
+
                     if let params = parameters {
                         var options: [String: Any] = [:]
                         options["temperature"] = params.temperature
@@ -109,7 +126,7 @@ actor OllamaService: AIServiceProtocol {
                         }
                         body["options"] = options
                     }
-                    
+
                     request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)
@@ -131,6 +148,8 @@ actor OllamaService: AIServiceProtocol {
                         throw AIServiceError.serverError("Ollama returned HTTP \(httpResponse.statusCode): \(errorBody)")
                     }
 
+                    var toolCallBuffer: [String: (name: String, arguments: String)] = [:]
+
                     for try await line in bytes.lines {
                         if Task.isCancelled { break }
 
@@ -140,11 +159,25 @@ actor OllamaService: AIServiceProtocol {
                             continue
                         }
 
-                        if let content = chunk.message?.content, !content.isEmpty {
-                            continuation.yield(content)
+                        if let message = chunk.message {
+                            // Handle tool calls in the message
+                            if let toolCalls = message.toolCalls {
+                                for toolCall in toolCalls {
+                                    continuation.yield(.toolCall(AIToolCall(
+                                        id: toolCall.id ?? UUID().uuidString,
+                                        name: toolCall.function?.name ?? "",
+                                        arguments: toolCall.function?.arguments ?? "{}"
+                                    )))
+                                }
+                            }
+
+                            if let content = message.content, !content.isEmpty {
+                                continuation.yield(.text(content))
+                            }
                         }
 
                         if chunk.done {
+                            continuation.yield(.done)
                             break
                         }
                     }
@@ -161,15 +194,19 @@ actor OllamaService: AIServiceProtocol {
         }
     }
 
-    nonisolated func generateOnce(prompt: String, systemPrompt: String?, modelOverride: String?, parameters: AIParameters?) async throws -> String {
+    nonisolated func generateOnce(prompt: String, systemPrompt: String?, modelOverride: String?, parameters: AIParameters?, tools: [AITool]?) async throws -> String {
         var result = ""
         let messages = [ChatMessage(role: .user, content: prompt)]
-        for try await chunk in streamChat(messages: messages, systemPrompt: systemPrompt, modelOverride: modelOverride, parameters: parameters) {
-            result += chunk
+        for try await chunk in streamChat(messages: messages, systemPrompt: systemPrompt, modelOverride: modelOverride, parameters: parameters, tools: tools) {
+            if case .text(let text) = chunk {
+                result += text
+            }
         }
         return result
     }
 }
+
+// MARK: - Ollama Response Models
 
 nonisolated struct OllamaChatChunk: Decodable, Sendable {
     let message: OllamaChatMessage?
@@ -178,6 +215,22 @@ nonisolated struct OllamaChatChunk: Decodable, Sendable {
     nonisolated struct OllamaChatMessage: Decodable, Sendable {
         let role: String?
         let content: String?
+        let toolCalls: [OllamaToolCall]?
+
+        enum CodingKeys: String, CodingKey {
+            case role, content, toolCalls = "tool_calls"
+        }
+    }
+
+    nonisolated struct OllamaToolCall: Decodable, Sendable {
+        let id: String?
+        let type: String?
+        let function: OllamaFunctionCall?
+    }
+
+    nonisolated struct OllamaFunctionCall: Decodable, Sendable {
+        let name: String?
+        let arguments: String?
     }
 }
 
@@ -198,5 +251,3 @@ nonisolated struct OllamaModel: Identifiable, Decodable, Sendable {
 nonisolated struct OllamaModelsResponse: Decodable, Sendable {
     let models: [OllamaModel]
 }
-
-
