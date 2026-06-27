@@ -446,7 +446,8 @@ struct ChatView: View {
                         if canSend { sendMessage() }
                     }
 
-                    // Send button
+                    // Send button — icon must contrast with accentPrimary which
+                    // is white in dark mode and black in light mode.
                     Button {
                         if isStreaming { stopStreaming() } else { sendMessage() }
                     } label: {
@@ -455,7 +456,11 @@ struct ChatView: View {
                                 .fill(canSend || isStreaming ? AppTheme.Colors.accentPrimary : AppTheme.Colors.backgroundTertiary)
                             Image(systemName: isStreaming ? "stop.fill" : "arrow.up")
                                 .font(.system(size: 14, weight: .semibold))
-                                .foregroundStyle(canSend || isStreaming ? .white : AppTheme.Colors.textTertiary)
+                                .foregroundStyle(
+                                    canSend || isStreaming
+                                        ? AppTheme.Colors.backgroundPrimary
+                                        : AppTheme.Colors.textTertiary
+                                )
                         }
                         .frame(width: 30, height: 30)
                         .contentShape(Circle())
