@@ -25,22 +25,20 @@ final class MCPService: Sendable {
     private func loadConfigs() {
         if let data = UserDefaults.standard.data(forKey: "mcpServerConfigs"),
            let configs = try? JSONDecoder().decode([MCPServerConfig].self, from: data) {
-            serverConfigs = configs
-        } else {
-            // Default example configs
-            serverConfigs = [
-                MCPServerConfig(
-                    name: "Filesystem",
-                    transport: .stdio(command: "/usr/local/bin/npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "/Users"], env: nil),
-                    enabled: false
-                ),
-                MCPServerConfig(
-                    name: "Git",
-                    transport: .stdio(command: "/usr/local/bin/npx", args: ["-y", "@modelcontextprotocol/server-git"], env: nil),
-                    enabled: false
-                )
-            ]
+            // Migrate any old hardcoded /usr/local/bin/npx entries to bare "npx"
+            // so the path resolver picks the right one for this machine.
+            serverConfigs = configs.map { config in
+                guard case .stdio(let command, let args, let env) = config.transport else { return config }
+                if command == "/usr/local/bin/npx" || command == "/opt/homebrew/bin/npx" {
+                    var fixed = config
+                    fixed.transport = .stdio(command: "npx", args: args, env: env)
+                    return fixed
+                }
+                return config
+            }
             saveConfigs()
+        } else {
+            serverConfigs = []
         }
     }
 
@@ -90,11 +88,32 @@ final class MCPService: Sendable {
     }
 
     func addServer(_ config: MCPServerConfig) async {
-        serverConfigs.append(config)
+        // Dedupe by name — replaces an existing entry instead of producing
+        // two rows with the same id.
+        if let existingIndex = serverConfigs.firstIndex(where: { $0.name == config.name }) {
+            await disconnect(config: serverConfigs[existingIndex])
+            serverConfigs[existingIndex] = config
+        } else {
+            serverConfigs.append(config)
+        }
         saveConfigs()
         if config.enabled {
             await connect(config: config)
+            await refreshTools()
         }
+    }
+
+    /// Force a fresh connection attempt — useful for the user's "Reconnect"
+    /// action on a failed entry.
+    func reconnect(_ config: MCPServerConfig) async {
+        await disconnect(config: config)
+        await connect(config: config)
+        await refreshTools()
+    }
+
+    /// Number of tools currently exposed by a given server.
+    func toolCount(for serverName: String) -> Int {
+        availableTools.filter { $0.name.hasPrefix("\(serverName)_") }.count
     }
 
     func removeServer(_ config: MCPServerConfig) async {

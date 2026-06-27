@@ -31,18 +31,46 @@ actor MCPClient: Sendable {
     }
 
     func connect() async throws {
-        guard case .disconnected = state else { return }
+        // Allow reconnect after a failed attempt — was previously stuck if
+        // initialize threw on a first try and never reset to disconnected.
+        if case .connected = state { return }
+        if case .connecting = state { return }
         state = .connecting
 
-        switch transport {
-        case .stdio(let command, let args, let env):
-            try await connectStdio(command: command, args: args, env: env)
-        case .http(let url, let headers):
-            try await connectHTTP(url: url, headers: headers)
-        }
+        do {
+            switch transport {
+            case .stdio(let command, let args, let env):
+                try await connectStdio(command: command, args: args, env: env)
+            case .http(let url, let headers):
+                try await connectHTTP(url: url, headers: headers)
+            }
 
-        let initResponse = try await sendInitialize()
-        state = .connected(serverInfo: initResponse.serverInfo, capabilities: initResponse.capabilities)
+            let initResponse = try await sendInitialize()
+            try await sendInitializedNotification()
+            state = .connected(serverInfo: initResponse.serverInfo, capabilities: initResponse.capabilities)
+        } catch {
+            state = .disconnected
+            await teardownProcess()
+            throw error
+        }
+    }
+
+    private func teardownProcess() async {
+        readerTask?.cancel()
+        readerTask = nil
+        process?.terminate()
+        process = nil
+        stdinPipe = nil
+        stdoutPipe = nil
+    }
+
+    /// MCP servers expect a `notifications/initialized` after `initialize`
+    /// completes; without it, some servers refuse to respond to tools/list.
+    private func sendInitializedNotification() async throws {
+        let notification = JSONRPCNotification(jsonrpc: "2.0", method: "notifications/initialized", params: nil)
+        let data = try encoder.encode(notification)
+        let line = String(data: data, encoding: .utf8)! + "\n"
+        try await writeToTransport(line)
     }
 
     func disconnect() async {
@@ -86,13 +114,30 @@ actor MCPClient: Sendable {
     // MARK: - Private Methods
 
     private func connectStdio(command: String, args: [String], env: [String: String]?) async throws {
+        // Resolve the executable: if a bare name like "npx" or "node" was
+        // provided, hunt down the absolute path via PATH; otherwise trust
+        // the literal path. Without this the user has to type out
+        // /usr/local/bin/npx or /opt/homebrew/bin/npx which differs per machine.
+        let resolved = try Self.resolveExecutable(command)
+
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: command)
+        process.executableURL = URL(fileURLWithPath: resolved)
         process.arguments = args
 
+        // Always carry through the user's PATH so npx can locate node, etc.
+        var mergedEnv = ProcessInfo.processInfo.environment
         if let env = env {
-            process.environment = ProcessInfo.processInfo.environment.merging(env) { _, new in new }
+            mergedEnv = mergedEnv.merging(env) { _, new in new }
         }
+        // Common Homebrew prefixes that GUI apps don't get by default.
+        let extraPaths = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
+        let currentPath = mergedEnv["PATH"] ?? ""
+        let pathParts = currentPath.split(separator: ":").map(String.init)
+        let missingPaths = extraPaths.filter { !pathParts.contains($0) }
+        if !missingPaths.isEmpty {
+            mergedEnv["PATH"] = (missingPaths + pathParts).joined(separator: ":")
+        }
+        process.environment = mergedEnv
 
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()
@@ -106,9 +151,32 @@ actor MCPClient: Sendable {
         self.stdinPipe = stdinPipe
         self.stdoutPipe = stdoutPipe
 
-        try process.run()
+        do {
+            try process.run()
+        } catch {
+            throw MCPError.transportError("Failed to launch '\(resolved)': \(error.localizedDescription)")
+        }
 
         startReadingStdout(stdoutPipe)
+    }
+
+    /// Locates an executable by name on common macOS install paths.
+    /// Returns the input unchanged if it's already an absolute path.
+    static func resolveExecutable(_ command: String) throws -> String {
+        if command.hasPrefix("/") {
+            guard FileManager.default.isExecutableFile(atPath: command) else {
+                throw MCPError.transportError("Not executable: \(command)")
+            }
+            return command
+        }
+        let searchPaths = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
+        for dir in searchPaths {
+            let candidate = "\(dir)/\(command)"
+            if FileManager.default.isExecutableFile(atPath: candidate) {
+                return candidate
+            }
+        }
+        throw MCPError.transportError("Could not find '\(command)' in \(searchPaths.joined(separator: ", ")). Install it or use the absolute path.")
     }
 
     private func connectHTTP(url: String, headers: [String: String]?) async throws {
