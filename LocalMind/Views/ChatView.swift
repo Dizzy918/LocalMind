@@ -52,6 +52,9 @@ struct ChatView: View {
     // Side-by-side "compare with another model" sheet
     @State private var comparison: ModelComparisonRequest?
 
+    // Conversation branches (versions saved on edit/regenerate)
+    @State private var showingBranches = false
+
     // One-time onboarding hint shown on the empty welcome screen.
     @AppStorage("hasSeenWelcomeHint") private var hasSeenWelcomeHint = false
 
@@ -231,6 +234,27 @@ struct ChatView: View {
             }
 
             Spacer()
+
+            // Branch navigator — only appears once the chat has forked at least
+            // once (an edit or regenerate saved a previous version).
+            if !conversation.branches.isEmpty {
+                Button {
+                    showingBranches = true
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.triangle.branch")
+                            .font(.system(size: 13))
+                        Text("\(conversation.branches.count)")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundStyle(AppTheme.Colors.textTertiary)
+                }
+                .buttonStyle(.plain)
+                .help("Earlier versions of this conversation")
+                .popover(isPresented: $showingBranches, arrowEdge: .bottom) {
+                    branchListPopover
+                }
+            }
 
             // Per-conversation model & generation parameters. "cpu" reads as
             // "which model / how it generates" for this chat specifically.
@@ -420,6 +444,63 @@ struct ChatView: View {
         .padding(AppTheme.Spacing.lg)
         .frame(width: 320)
         .onAppear { tempDraft = conversation.temperatureOverride ?? aiManager.aiParameters.temperature }
+    }
+
+    // MARK: - Branch navigator
+
+    private var branchListPopover: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Conversation Branches")
+                    .font(AppTheme.Typography.headline)
+                Text("Versions saved when you edited or regenerated. Restore one to bring that path back.")
+                    .font(AppTheme.Typography.captionSecondary)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Divider()
+
+            ScrollView {
+                LazyVStack(spacing: 6) {
+                    ForEach(conversation.branches.reversed()) { branch in
+                        branchRow(branch)
+                    }
+                }
+            }
+        }
+        .padding(AppTheme.Spacing.lg)
+        .frame(width: 380, height: 380)
+    }
+
+    private func branchRow(_ branch: ConversationBranch) -> some View {
+        HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(branch.label)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                Text("\(branch.messages.count) messages" + (branch.messages.last.map { " · \($0.content.prefix(48))" } ?? ""))
+                    .font(AppTheme.Typography.captionSecondary)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Button("Restore") { restoreBranch(branch) }
+                .controlSize(.small)
+            Button {
+                deleteBranch(branch)
+            } label: {
+                Image(systemName: "trash").font(.system(size: 11))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Delete this saved version")
+        }
+        .padding(AppTheme.Spacing.sm)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(AppTheme.Colors.backgroundSecondary.opacity(0.5))
+        )
     }
 
     // MARK: - Messages Area
@@ -1015,6 +1096,9 @@ struct ChatView: View {
         // Stop any in-flight stream first
         if isStreaming { stopStreaming() }
 
+        // Preserve the path we're about to fork away from.
+        snapshotBranch(divergingAt: index, label: "Before edit")
+
         // Truncate to and including the edited message, with updated content
         var updatedMessage = conversation.messages[index]
         updatedMessage.content = newContent
@@ -1031,12 +1115,50 @@ struct ChatView: View {
 
         if isStreaming { stopStreaming() }
 
+        // Preserve the answer (and tail) we're about to throw away.
+        snapshotBranch(divergingAt: index, label: "Before regenerate")
+
         // Drop the AI message and everything after it
         conversation.messages = Array(conversation.messages[..<index])
         conversation.updatedAt = Date()
         dataStore.saveConversation(conversation)
 
         currentStreamTask = Task { await generateResponse() }
+    }
+
+    // MARK: - Branches
+
+    /// Save the current message list as a recoverable branch before a fork
+    /// (edit or regenerate) discards part of it. No-op when nothing is lost.
+    private func snapshotBranch(divergingAt index: Int, label: String) {
+        guard index < conversation.messages.count else { return }
+        let stamp = Date().formatted(date: .omitted, time: .shortened)
+        conversation.branches.append(ConversationBranch(label: "\(label) · \(stamp)", messages: conversation.messages))
+        // Keep only the most recent few so a long editing session can't bloat
+        // the on-disk conversation.
+        if conversation.branches.count > 10 {
+            conversation.branches.removeFirst(conversation.branches.count - 10)
+        }
+    }
+
+    /// Load a saved branch, first stashing the current path so the switch is
+    /// itself reversible.
+    private func restoreBranch(_ branch: ConversationBranch) {
+        if isStreaming { stopStreaming() }
+        let stamp = Date().formatted(date: .omitted, time: .shortened)
+        let currentMessages = conversation.messages
+        conversation.branches.removeAll { $0.id == branch.id }
+        conversation.branches.append(ConversationBranch(label: "Replaced · \(stamp)", messages: currentMessages))
+        if conversation.branches.count > 10 {
+            conversation.branches.removeFirst(conversation.branches.count - 10)
+        }
+        conversation.messages = branch.messages
+        conversation.updatedAt = Date()
+        showingBranches = false
+    }
+
+    private func deleteBranch(_ branch: ConversationBranch) {
+        conversation.branches.removeAll { $0.id == branch.id }
     }
 
     /// Opens the side-by-side compare sheet for an assistant message, capturing
