@@ -114,12 +114,14 @@ enum MCPCatalog {
             description: "Search the web via Brave's API.",
             iconSystemName: "magnifyingglass",
             category: .web,
-            officialURL: "https://github.com/modelcontextprotocol/servers/tree/main/src/brave-search",
+            officialURL: "https://github.com/brave/brave-search-mcp-server",
+            // Brave moved the server off @modelcontextprotocol (that package is
+            // now deprecated on npm) to their own, actively-maintained package.
             template: MCPServerConfig(
                 name: "Brave Search",
                 transport: .stdio(
                     command: "npx",
-                    args: ["-y", "@modelcontextprotocol/server-brave-search"],
+                    args: ["-y", "@brave/brave-search-mcp-server"],
                     env: ["BRAVE_API_KEY": ""]
                 ),
                 enabled: true

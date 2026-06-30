@@ -89,6 +89,13 @@ struct MCPSettingsView: View {
             }
             .toggleStyle(.switch)
             Spacer()
+            if mcpService.approvedToolCount > 0 {
+                Button("Revoke \(mcpService.approvedToolCount) approved") {
+                    mcpService.resetApprovedTools()
+                }
+                .controlSize(.small)
+                .help("Require approval again for tools you previously chose to always allow")
+            }
             Button {
                 showingAuditLog = true
             } label: {

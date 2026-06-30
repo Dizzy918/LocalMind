@@ -48,8 +48,8 @@ final class MCPService {
     /// run sequentially.
     var pendingApproval: MCPToolApprovalRequest?
 
-    /// Exposed tool names the user chose to "always allow" — session-scoped, so
-    /// trust has to be re-granted each launch.
+    /// Exposed tool names the user chose to "always allow", persisted across
+    /// launches. Revocable in one tap from MCP settings.
     private var autoApprovedTools: Set<String> = []
 
     /// Scheduled reconnect tasks, keyed by server name. Canceled when the
@@ -66,6 +66,7 @@ final class MCPService {
         self.dataStore = dataStore
         loadConfigs()
         loadDisabledTools()
+        loadAutoApprovedTools()
         Task { await connectAll() }
     }
 
@@ -82,6 +83,25 @@ final class MCPService {
         if let data = try? JSONEncoder().encode(serializable) {
             UserDefaults.standard.set(data, forKey: "mcpDisabledTools")
         }
+    }
+
+    private func loadAutoApprovedTools() {
+        if let names = UserDefaults.standard.array(forKey: "mcpAutoApprovedTools") as? [String] {
+            autoApprovedTools = Set(names)
+        }
+    }
+
+    private func saveAutoApprovedTools() {
+        UserDefaults.standard.set(Array(autoApprovedTools).sorted(), forKey: "mcpAutoApprovedTools")
+    }
+
+    /// How many tools the user has granted standing "always allow" approval to.
+    var approvedToolCount: Int { autoApprovedTools.count }
+
+    /// Revoke every standing approval so each tool must be confirmed again.
+    func resetApprovedTools() {
+        autoApprovedTools.removeAll()
+        saveAutoApprovedTools()
     }
 
     private func loadConfigs() {
@@ -125,6 +145,17 @@ final class MCPService {
             let rest = Array(newArgs[(pkgIndex + 1)...])
             newCommand = "uvx"
             newArgs = [deadPackages[pkg]!] + rest
+        }
+
+        // 3. Rewrite npm packages that merely moved to a new name (command
+        //    stays npx) — e.g. Brave's server left @modelcontextprotocol, whose
+        //    old package is now deprecated/unpublished.
+        let renamedPackages: [String: String] = [
+            "@modelcontextprotocol/server-brave-search": "@brave/brave-search-mcp-server"
+        ]
+        if newCommand == "npx",
+           let idx = newArgs.firstIndex(where: { renamedPackages.keys.contains($0) }) {
+            newArgs[idx] = renamedPackages[newArgs[idx]]!
         }
 
         var fixed = config
@@ -373,6 +404,7 @@ final class MCPService {
                     finish(true)
                 case .allowAlways:
                     self?.autoApprovedTools.insert(toolName)
+                    self?.saveAutoApprovedTools()
                     finish(true)
                 case .deny:
                     finish(false)

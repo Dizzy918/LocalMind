@@ -98,6 +98,14 @@ final class MCPMigrationTests: XCTestCase {
         XCTAssertEqual(args, ["mcp-server-fetch"])
     }
 
+    func testDeprecatedBravePackageRenamedKeepingNpx() {
+        let migrated = MCPService.migrate(config(command: "npx", args: ["-y", "@modelcontextprotocol/server-brave-search"]))
+        let (cmd, args) = stdio(migrated)!
+        // Brave moved to a new npm package but it's still launched via npx.
+        XCTAssertEqual(cmd, "npx")
+        XCTAssertEqual(args, ["-y", "@brave/brave-search-mcp-server"])
+    }
+
     func testWorkingNpmPackageLeftAlone() {
         // server-memory is still on npm — the migrator must not touch it.
         let original = config(command: "npx", args: ["-y", "@modelcontextprotocol/server-memory"])
