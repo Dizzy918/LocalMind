@@ -354,8 +354,12 @@ struct MessageBubble: View {
                     }
                 }
 
-                // Action bar — visible on hover
-                if !isEditing && (isHovered || showCopied) {
+                // Action bar — always laid out when not editing so hovering
+                // can't change the row's height. A height change moves content
+                // under the cursor, which re-triggers onHover and relayout in a
+                // loop (the up/down jitter when the pointer is over the message
+                // but not on a button). Visibility is opacity + hit-testing only.
+                if !isEditing {
                     HStack(spacing: AppTheme.Spacing.xs) {
                         MessageActionButton(icon: showCopied ? "checkmark" : "doc.on.doc", label: showCopied ? "Copied" : "Copy") {
                             NSPasteboard.general.clearContents()
@@ -394,7 +398,8 @@ struct MessageBubble: View {
                             }
                         }
                     }
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .opacity((isHovered || showCopied) ? 1 : 0)
+                    .allowsHitTesting(isHovered || showCopied)
                 }
             }
 
