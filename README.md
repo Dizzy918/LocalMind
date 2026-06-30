@@ -4,7 +4,7 @@ A private, local-first AI assistant for macOS. All conversations stay on your de
 
 LocalMind connects to local AI backends running on your machine and provides a clean, modern chat interface inspired by Claude, ChatGPT, and Gemini.
 
-![macOS](https://img.shields.io/badge/macOS-26.0%2B-black?logo=apple)
+![macOS](https://img.shields.io/badge/macOS-15%2B-black?logo=apple)
 ![Swift](https://img.shields.io/badge/Swift-6-orange?logo=swift)
 ![License](https://img.shields.io/badge/License-MIT-blue)
 
@@ -35,10 +35,8 @@ LocalMind connects to local AI backends running on your machine and provides a c
 
 ## Requirements
 
-- **macOS 26.0** (Tahoe) or later
-- **Xcode Command Line Tools** (or full Xcode 26+)
-  - To install just the CLT: `xcode-select --install`
-  - Or download full Xcode from the App Store
+- **To run:** macOS 15 (Sequoia) or later. The Apple Intelligence backend additionally requires macOS 26+ on supported hardware; every other backend works on macOS 15+.
+- **To build from source:** full **Xcode 26 or later** (download from the App Store). The Apple Intelligence backend builds against the Foundation Models SDK introduced in Xcode 26.
 - One of the following AI backends:
   - [Ollama](https://ollama.com) (recommended)
   - [LM Studio](https://lmstudio.ai)
@@ -67,8 +65,11 @@ Select the **LocalMind** scheme, choose **My Mac** as the destination, and hit `
 **Option B: Using Command Line**
 
 ```bash
-xcodebuild -project LocalMind.xcodeproj -scheme LocalMind -destination 'platform=macOS' run
+# Build the app
+xcodebuild -project LocalMind.xcodeproj -scheme LocalMind -configuration Debug -destination 'platform=macOS' build
 ```
+
+`xcodebuild` builds but doesn't launch the app — open the resulting `LocalMind.app` from `~/Library/Developer/Xcode/DerivedData/`, or just use Option A to build and run from Xcode.
 
 No external dependencies — the project uses only Apple frameworks.
 
@@ -219,7 +220,7 @@ All settings are available in the app's Settings panel (`Cmd + ,`):
 
 ## Running Tests
 
-Unit tests live in `Tests/LocalMindTests/`. See [Tests/README.md](Tests/README.md) for instructions on adding the test target and running them.
+Unit tests live in `Tests/LocalMindTests/` and are already wired into the `LocalMind` scheme — no setup needed. See [Tests/README.md](Tests/README.md) for the file-by-file breakdown.
 
 ```bash
 xcodebuild test \

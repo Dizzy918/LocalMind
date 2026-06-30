@@ -22,6 +22,11 @@ struct ContentView: View {
     @AppStorage("sidebarWidth") private var persistedSidebarWidth: Double = 260
     @State private var liveSidebarWidth: Double = 260
     @State private var dragStartWidth: Double? = nil
+
+    /// Upper bound for the draggable sidebar width. Kept modest so dragging
+    /// can't swallow the window — the chat column always keeps the majority of
+    /// the space. (The compact minimum is 70.)
+    private let maxSidebarWidth: Double = 320
     
     // Resizer UX state
     @State private var isHoveringResizer = false
@@ -90,7 +95,7 @@ struct ContentView: View {
                         .onChanged { value in
                             if dragStartWidth == nil { dragStartWidth = liveSidebarWidth }
                             let proposed = dragStartWidth! + Double(value.translation.width)
-                            liveSidebarWidth = max(70, min(proposed, 400))
+                            liveSidebarWidth = max(70, min(proposed, maxSidebarWidth))
                         }
                         .onEnded { _ in
                             dragStartWidth = nil
@@ -111,7 +116,9 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .onAppear {
-            liveSidebarWidth = persistedSidebarWidth
+            // Clamp any previously-persisted width to the current cap, so a
+            // value saved before the cap existed can't reopen the sidebar wide.
+            liveSidebarWidth = min(persistedSidebarWidth, maxSidebarWidth)
             setAppIcon()
         }
         .task {
