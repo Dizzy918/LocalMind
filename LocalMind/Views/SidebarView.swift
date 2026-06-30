@@ -32,6 +32,7 @@ struct SidebarView: View {
     @FocusState private var isSearchFocused: Bool
     @State private var mergeSource: Conversation?
     @State private var showingProfileMenu = false
+    @State private var showingHelp = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -338,6 +339,8 @@ struct SidebarView: View {
 
                     settingsButton(size: 14)
 
+                    helpButton(size: 14)
+
                     HoverIconButton(
                         systemName: isDarkMode ? "moon.fill" : "sun.max.fill",
                         size: 14,
@@ -362,6 +365,8 @@ struct SidebarView: View {
                     profileButton(size: 20)
 
                     settingsButton(size: 12)
+
+                    helpButton(size: 12)
 
                     HoverIconButton(
                         systemName: isDarkMode ? "moon.fill" : "sun.max.fill",
@@ -550,6 +555,72 @@ struct SidebarView: View {
         case .google: return "Signed in with Google (local)"
         case .email:  return "Signed in with Email"
         case .guest:  return "Guest profile"
+        }
+    }
+
+    // MARK: - Help
+
+    private func helpButton(size: CGFloat) -> some View {
+        Button {
+            showingHelp.toggle()
+        } label: {
+            HoverIconLabel(systemName: "questionmark.circle", size: size, helpText: "Keyboard shortcuts & tips")
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $showingHelp, arrowEdge: .top) {
+            helpPopover
+        }
+    }
+
+    private var helpPopover: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+            Text("Shortcuts & Tips")
+                .font(.headline)
+
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+                shortcutRow("⌘N", "New conversation")
+                shortcutRow("⌘↩", "Send message")
+                shortcutRow("↑ ↓", "Cycle previous prompts")
+                shortcutRow("Esc", "Exit search")
+                shortcutRow("⌘V", "Paste an image")
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+                tipRow("doc.badge.plus", "Drag & drop an image, PDF, or text file into the chat")
+                tipRow("circle.fill", "Click the status dot for connection details")
+                tipRow("slider.horizontal.3", "Set custom instructions per conversation from the chat header")
+            }
+        }
+        .padding(AppTheme.Spacing.lg)
+        .frame(width: 300, alignment: .leading)
+    }
+
+    private func shortcutRow(_ keys: String, _ label: String) -> some View {
+        HStack(spacing: AppTheme.Spacing.md) {
+            Text(keys)
+                .font(.system(.caption, design: .monospaced).weight(.semibold))
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+                .frame(width: 48, alignment: .leading)
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+            Spacer()
+        }
+    }
+
+    private func tipRow(_ icon: String, _ label: String) -> some View {
+        HStack(alignment: .top, spacing: AppTheme.Spacing.md) {
+            Image(systemName: icon)
+                .font(.system(size: 12))
+                .foregroundStyle(AppTheme.Colors.accentPrimary)
+                .frame(width: 18)
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
         }
     }
 

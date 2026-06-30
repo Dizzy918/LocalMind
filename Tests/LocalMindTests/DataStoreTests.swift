@@ -125,6 +125,43 @@ final class DataStoreTests: XCTestCase {
         XCTAssertEqual(dataStore.searchConversations(query: "   ").count, 0)
     }
 
+    func testSearchIsScopedToActiveProfile() {
+        // saveConversation stamps the active profile (read from UserDefaults)
+        // onto new conversations, and search must only return the active
+        // profile's matches. Save/restore the real key so we don't disturb
+        // the host app's state.
+        let key = "activeProfileID"
+        let original = UserDefaults.standard.string(forKey: key)
+        defer {
+            if let original { UserDefaults.standard.set(original, forKey: key) }
+            else { UserDefaults.standard.removeObject(forKey: key) }
+        }
+
+        let profileA = UUID()
+        let profileB = UUID()
+
+        UserDefaults.standard.set(profileA.uuidString, forKey: key)
+        var convoA = Conversation(title: "A chat")
+        convoA.messages.append(ChatMessage(role: .user, content: "alpha secret"))
+        dataStore.saveConversation(convoA)
+
+        UserDefaults.standard.set(profileB.uuidString, forKey: key)
+        var convoB = Conversation(title: "B chat")
+        convoB.messages.append(ChatMessage(role: .user, content: "beta secret"))
+        dataStore.saveConversation(convoB)
+
+        // Active profile is B: searching for A's word must return nothing.
+        XCTAssertTrue(dataStore.searchConversations(query: "alpha").isEmpty,
+                      "Profile B must not see profile A's conversations in search")
+        XCTAssertTrue(dataStore.searchConversations(query: "beta").contains { $0.id == convoB.id })
+
+        // Switch to A: now A's word matches and B's does not.
+        UserDefaults.standard.set(profileA.uuidString, forKey: key)
+        XCTAssertTrue(dataStore.searchConversations(query: "alpha").contains { $0.id == convoA.id })
+        XCTAssertTrue(dataStore.searchConversations(query: "beta").isEmpty,
+                      "Profile A must not see profile B's conversations in search")
+    }
+
     func testSearchAfterDeleteDoesNotMatch() {
         var conversation = Conversation(title: "Lemon Cake Recipe")
         conversation.messages.append(ChatMessage(role: .user, content: "Hi"))

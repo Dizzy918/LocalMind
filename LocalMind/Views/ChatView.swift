@@ -43,6 +43,9 @@ struct ChatView: View {
     // System prompt editor
     @State private var showingSystemPromptEditor = false
 
+    // One-time onboarding hint shown on the empty welcome screen.
+    @AppStorage("hasSeenWelcomeHint") private var hasSeenWelcomeHint = false
+
     @FocusState private var isInputFocused: Bool
     
     var body: some View {
@@ -322,6 +325,10 @@ struct ChatView: View {
 
     private var welcomeLayout: some View {
         VStack(spacing: 0) {
+            if !hasSeenWelcomeHint {
+                welcomeHint
+            }
+
             Spacer()
 
             VStack(spacing: AppTheme.Spacing.xxl) {
@@ -366,7 +373,42 @@ struct ChatView: View {
         }
         .frame(maxWidth: .infinity)
     }
-    
+
+    /// One-time onboarding banner — dismisses for good once seen. Points the
+    /// user at the ? button rather than forcing a modal tour.
+    private var welcomeHint: some View {
+        HStack(spacing: AppTheme.Spacing.md) {
+            Image(systemName: "hand.wave")
+                .foregroundStyle(AppTheme.Colors.accentPrimary)
+
+            Text("Welcome! Press ⌘N for a new chat, drop a file to analyze it, or click ? in the sidebar for shortcuts.")
+                .font(AppTheme.Typography.caption)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: AppTheme.Spacing.md)
+
+            Button {
+                withAnimation(AppTheme.Animations.quick) { hasSeenWelcomeHint = true }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(AppTheme.Colors.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+        }
+        .padding(.horizontal, AppTheme.Spacing.lg)
+        .padding(.vertical, AppTheme.Spacing.md)
+        .background {
+            RoundedRectangle(cornerRadius: AppTheme.Dimensions.cornerRadius)
+                .fill(AppTheme.Colors.accentPrimary.opacity(0.08))
+        }
+        .frame(maxWidth: 600)
+        .padding(.horizontal, AppTheme.Spacing.xl)
+        .padding(.top, AppTheme.Spacing.lg)
+    }
+
     // MARK: - Input Bar
 
     private var inputBar: some View {
@@ -740,20 +782,28 @@ struct ChatView: View {
                     break
                 }
             }
-            if !pendingToolCalls.isEmpty {
-                await aiManager.executeToolCalls(pendingToolCalls) { name, result in
-                    streamingContent += "\n\n_🔧 \(name): \(result)_"
+            // Everything past the stream loop must be gated on cancellation.
+            // stopStreaming() handles the partial-message append and clears
+            // streamingContent itself; if a late chunk slips in after that
+            // clear and re-populates streamingContent, this guard stops us from
+            // appending a second, orphaned assistant message (and from running
+            // tools for a generation the user already cancelled).
+            if !Task.isCancelled {
+                if !pendingToolCalls.isEmpty {
+                    await aiManager.executeToolCalls(pendingToolCalls) { name, result in
+                        streamingContent += "\n\n_🔧 \(name): \(result)_"
+                    }
                 }
-            }
-            
-            if !streamingContent.isEmpty {
-                let assistantMessage = ChatMessage(role: .assistant, content: streamingContent)
-                conversation.messages.append(assistantMessage)
-                conversation.updatedAt = Date()
-                dataStore.saveConversation(conversation)
-                
-                if UserDefaults.standard.bool(forKey: "autoReadResponses") {
-                    voiceManager.speak(text: assistantMessage.content)
+
+                if !streamingContent.isEmpty {
+                    let assistantMessage = ChatMessage(role: .assistant, content: streamingContent)
+                    conversation.messages.append(assistantMessage)
+                    conversation.updatedAt = Date()
+                    dataStore.saveConversation(conversation)
+
+                    if UserDefaults.standard.bool(forKey: "autoReadResponses") {
+                        voiceManager.speak(text: assistantMessage.content)
+                    }
                 }
             }
         } catch {

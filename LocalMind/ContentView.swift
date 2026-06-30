@@ -59,38 +59,26 @@ struct ContentView: View {
                 .frame(width: isHoveringResizer || isDraggingResizer ? 3 : 1)
                 .padding(.horizontal, isHoveringResizer || isDraggingResizer ? 4.5 : 5.5)
                 .contentShape(Rectangle())
+                // Declarative resize cursor — macOS shows/hides it as the
+                // pointer enters/leaves the handle, with no manual push/pop
+                // stack to leak if a hover-out event is ever dropped (e.g. the
+                // window closing mid-hover).
+                .pointerStyle(.columnResize)
                 .onHover { hovering in
+                    // onHover now only drives the visual highlight, with a small
+                    // delay so brushing past the 1px handle doesn't flicker it.
                     hoverTask?.cancel()
-                    
                     if hovering {
-                        // Delay both visual highlight and cursor to avoid annoying flashes when just passing over
                         hoverTask = Task {
                             try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
-                            if !Task.isCancelled {
-                                await MainActor.run {
-                                    withAnimation(.easeInOut(duration: 0.15)) {
-                                        isHoveringResizer = true
-                                    }
-                                    #if os(macOS)
-                                    NSCursor.resizeLeftRight.push()
-                                    #endif
-                                }
+                            guard !Task.isCancelled else { return }
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                isHoveringResizer = true
                             }
                         }
                     } else {
-                        // If it was fully hovered, we need to pop the cursor.
-                        // We check if it was actually hovered (isHoveringResizer is true)
-                        // to ensure we don't pop a cursor we never pushed.
-                        let wasHovering = isHoveringResizer
-                        
                         withAnimation(.easeInOut(duration: 0.15)) {
                             isHoveringResizer = false
-                        }
-                        
-                        if wasHovering {
-                            #if os(macOS)
-                            DispatchQueue.main.async { NSCursor.pop() }
-                            #endif
                         }
                     }
                 }
@@ -128,6 +116,13 @@ struct ContentView: View {
         }
         .task {
             await aiManager.detectAndConnect()
+        }
+        .onChange(of: profileStore.currentProfileID) { _, _ in
+            // Switching profiles must not leave another profile's conversation
+            // (or a half-typed draft) on screen. Clear the selection so the
+            // detail pane falls back to a fresh draft for the new profile.
+            draftConversation = nil
+            selectedConversationID = nil
         }
     }
     

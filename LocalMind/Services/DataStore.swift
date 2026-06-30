@@ -359,8 +359,18 @@ final class DataStore {
             terms.allSatisfy { entry.value.contains($0) }
         }.map { $0.key }
 
+        let activeID = activeProfileID()
         return conversations
             .filter { matchingIDs.contains($0.id) }
+            // Search must stay within the active profile — otherwise profile A
+            // could surface profile B's chats. Mirrors conversationsForSelection.
+            .filter { convo in
+                if let active = activeID {
+                    return convo.profileID == active
+                } else {
+                    return convo.profileID == nil
+                }
+            }
             .sorted { $0.updatedAt > $1.updatedAt }
     }
 
