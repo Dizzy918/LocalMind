@@ -2,20 +2,9 @@
 
 Unit tests for LocalMind's core logic, using Apple's [XCTest framework](https://developer.apple.com/documentation/xctest).
 
-## One-time Setup
+## Setup
 
-The test target is not committed to `project.pbxproj` to keep the project file minimal. Add it once in Xcode:
-
-1. Open `LocalMind.xcodeproj`.
-2. **File → New → Target…** → macOS → **Unit Testing Bundle** → Next.
-3. Product name: `LocalMindTests`. Target to be Tested: `LocalMind`. Finish.
-4. Delete the auto-generated `LocalMindTests/LocalMindTests.swift` placeholder.
-5. Right-click the `LocalMindTests` group → **Add Files to "LocalMind"…**
-6. Select every `.swift` file under `Tests/LocalMindTests/`. In the dialog, untick **LocalMind** and tick **LocalMindTests**. Choose **Create groups** (not folder references). Add.
-7. Edit the `LocalMind` scheme → **Test** → **+** → add `LocalMindTests`.
-8. Press **⌘U**.
-
-Once added, enable the `test` job in `.github/workflows/build.yml` (set `if: false` → remove the line).
+The `LocalMindTests` target is already committed to `project.pbxproj` and wired into the `LocalMind` scheme — no manual setup needed. Open the project and press **⌘U**, or use the command line below. CI runs the suite on every push via the `test` job in `.github/workflows/build.yml`.
 
 ## Running
 
@@ -33,6 +22,9 @@ xcodebuild test \
 | `ConversationTests.swift` | Conversation model, title generation, codable round-trips, graceful fallback for unknown tool types |
 | `DataStoreTests.swift` | Save, retrieve, delete, search across titles and message content, multi-word search, sorting |
 | `AIServiceErrorTests.swift` | All error cases have user-facing descriptions and actionable recovery suggestions |
+| `NewConversationSendTests.swift` | Regression guard for the new-conversation send race — every binding mutation in `sendMessage()` is observable on the next read |
+| `ImportedMemoryTests.swift` | Cross-AI memory import parser tolerates markdown fences, leading prose, and other messy shapes |
+| `MCPHelpersTests.swift` | Pure-function MCP plumbing — slug formatter, saved-config migrator, executable resolver, SSE event splitter |
 
 ## Adding New Tests
 

@@ -647,6 +647,8 @@ struct ToolButton: View {
                     )
             }
             .help(isCompact ? displayName : "")
+            // Whole row is the tap target, including the trailing empty space.
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { hovering in
@@ -721,6 +723,9 @@ struct ConversationRow: View {
                     )
             }
             .help(isCompact ? conversation.title : "")
+            // Make the whole row — including the empty space to the right of
+            // the title — a single tap target, not just the text/emoji glyphs.
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { hovering in
