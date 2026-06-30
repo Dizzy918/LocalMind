@@ -210,6 +210,7 @@ struct MessageBubble: View {
     var onDelete: (() -> Void)? = nil
     var onEdit: ((String) -> Void)? = nil
     var onRegenerate: (() -> Void)? = nil
+    var onCompare: (() -> Void)? = nil
 
     init(
         message: ChatMessage,
@@ -217,7 +218,8 @@ struct MessageBubble: View {
         onPlay: (() -> Void)? = nil,
         onDelete: (() -> Void)? = nil,
         onEdit: ((String) -> Void)? = nil,
-        onRegenerate: (() -> Void)? = nil
+        onRegenerate: (() -> Void)? = nil,
+        onCompare: (() -> Void)? = nil
     ) {
         self.message = message
         self.isStreaming = isStreaming
@@ -225,6 +227,7 @@ struct MessageBubble: View {
         self.onDelete = onDelete
         self.onEdit = onEdit
         self.onRegenerate = onRegenerate
+        self.onCompare = onCompare
     }
 
     private var isUser: Bool { message.role == .user }
@@ -381,6 +384,10 @@ struct MessageBubble: View {
                             MessageActionButton(icon: "arrow.clockwise", label: "Regenerate", action: onRegenerate)
                         }
 
+                        if !isUser, let onCompare {
+                            MessageActionButton(icon: "rectangle.split.2x1", label: "Compare models", action: onCompare)
+                        }
+
                         if onDelete != nil {
                             MessageActionButton(icon: "trash", label: "Delete") {
                                 showDeleteConfirmation = true
@@ -416,6 +423,12 @@ struct MessageBubble: View {
             if !isUser, let onRegenerate {
                 Button(action: onRegenerate) {
                     Label("Regenerate", systemImage: "arrow.clockwise")
+                }
+            }
+
+            if !isUser, let onCompare {
+                Button(action: onCompare) {
+                    Label("Compare with another model…", systemImage: "rectangle.split.2x1")
                 }
             }
 

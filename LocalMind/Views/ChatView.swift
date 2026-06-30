@@ -49,6 +49,9 @@ struct ChatView: View {
     // drag doesn't trigger a disk write on every tick.
     @State private var tempDraft: Double = AIParameters.default.temperature
 
+    // Side-by-side "compare with another model" sheet
+    @State private var comparison: ModelComparisonRequest?
+
     // One-time onboarding hint shown on the empty welcome screen.
     @AppStorage("hasSeenWelcomeHint") private var hasSeenWelcomeHint = false
 
@@ -169,6 +172,21 @@ struct ChatView: View {
                 guard !Task.isCancelled else { return }
                 UserDefaults.standard.set(newValue, forKey: "draft_\(conversationID.uuidString)")
             }
+        }
+        .sheet(item: $comparison) { request in
+            ModelCompareView(
+                request: request,
+                aiManager: aiManager,
+                candidateModels: aiManager.allAvailableModelIDs,
+                onReplace: { newText in
+                    if let idx = conversation.messages.firstIndex(where: { $0.id == request.messageID }) {
+                        conversation.messages[idx].content = newText
+                        conversation.updatedAt = Date()
+                    }
+                    comparison = nil
+                },
+                onClose: { comparison = nil }
+            )
         }
     }
 
@@ -399,7 +417,8 @@ struct ChatView: View {
                             onPlay: { voiceManager.speak(text: message.content) },
                             onDelete: { deleteMessage(message) },
                             onEdit: message.role == .user ? { newContent in editAndResend(message: message, newContent: newContent) } : nil,
-                            onRegenerate: message.role == .assistant ? { regenerate(from: message) } : nil
+                            onRegenerate: message.role == .assistant ? { regenerate(from: message) } : nil,
+                            onCompare: message.role == .assistant ? { startComparison(for: message) } : nil
                         )
                         .id(message.id)
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
@@ -844,22 +863,15 @@ struct ChatView: View {
         return nil
     }
     
-    private func generateResponse(modelOverride oneShotModel: String? = nil) async {
-        guard let service = aiManager.currentService else {
-            let errorMsg = ChatMessage(role: .assistant, content: "⚠️ \(AIServiceError.noBackendAvailable.localizedDescription)\n\n💡 \(AIServiceError.noBackendAvailable.recoverySuggestion ?? "")")
-            conversation.messages.append(errorMsg)
-            dataStore.saveConversation(conversation)
-            return
-        }
-        
-        isStreaming = true
-        streamingContent = ""
-        
-        var systemPrompt = UserDefaults.standard.string(forKey: "defaultSystemPrompt") ?? "You are LocalMind, a helpful, concise AI assistant. Provide clear, actionable responses. Use markdown formatting when appropriate."
-        if systemPrompt.isEmpty {
-            systemPrompt = "You are LocalMind, a helpful, concise AI assistant. Provide clear, actionable responses. Use markdown formatting when appropriate."
-        }
-        
+    /// Builds the effective system prompt: global default (or custom-tool
+    /// prompt), overridden per-conversation, with the active profile's Personal
+    /// Context prepended. Shared by the main generation and the compare view so
+    /// an alternative answer is produced under identical conditions.
+    private func resolvedSystemPrompt() -> String {
+        let fallback = "You are LocalMind, a helpful, concise AI assistant. Provide clear, actionable responses. Use markdown formatting when appropriate."
+        var systemPrompt = UserDefaults.standard.string(forKey: "defaultSystemPrompt") ?? fallback
+        if systemPrompt.isEmpty { systemPrompt = fallback }
+
         if let customToolID = conversation.customToolID,
            let customTool = dataStore.customTools.first(where: { $0.id == customToolID }) {
             systemPrompt = customTool.systemPrompt
@@ -870,13 +882,27 @@ struct ChatView: View {
             systemPrompt = override
         }
 
-        // Prepend the active profile's Personal Context. This is the user's
-        // portable, cross-provider memory — facts about them the AI should
-        // know on every chat, regardless of which backend is active.
+        // Prepend the active profile's Personal Context — the user's portable,
+        // cross-provider memory the AI should know on every chat.
         let personalContext = ProfileStore.currentPersonalContext()
         if !personalContext.isEmpty {
             systemPrompt = personalContext + "\n\n---\n\n" + systemPrompt
         }
+        return systemPrompt
+    }
+
+    private func generateResponse(modelOverride oneShotModel: String? = nil) async {
+        guard let service = aiManager.currentService else {
+            let errorMsg = ChatMessage(role: .assistant, content: "⚠️ \(AIServiceError.noBackendAvailable.localizedDescription)\n\n💡 \(AIServiceError.noBackendAvailable.recoverySuggestion ?? "")")
+            conversation.messages.append(errorMsg)
+            dataStore.saveConversation(conversation)
+            return
+        }
+        
+        isStreaming = true
+        streamingContent = ""
+
+        let systemPrompt = resolvedSystemPrompt()
 
         // Apply context limit
         let contextLimit = UserDefaults.standard.integer(forKey: "contextMessageLimit")
@@ -993,6 +1019,22 @@ struct ChatView: View {
         dataStore.saveConversation(conversation)
 
         currentStreamTask = Task { await generateResponse() }
+    }
+
+    /// Opens the side-by-side compare sheet for an assistant message, capturing
+    /// the same prior context that produced it so a different model answers the
+    /// identical prompt. The result is non-destructive until the user chooses.
+    private func startComparison(for message: ChatMessage) {
+        guard let index = conversation.messages.firstIndex(where: { $0.id == message.id }) else { return }
+        let contextLimit = UserDefaults.standard.integer(forKey: "contextMessageLimit")
+        let limit = contextLimit > 0 ? contextLimit : 10
+        let context = Array(conversation.messages[..<index].suffix(limit))
+        comparison = ModelComparisonRequest(
+            messageID: message.id,
+            contextMessages: context,
+            systemPrompt: resolvedSystemPrompt(),
+            originalContent: message.content
+        )
     }
 
     private func stopStreaming() {
@@ -1382,5 +1424,151 @@ struct SystemPromptEditor: View {
         }
         .padding(AppTheme.Spacing.lg)
         .frame(width: 520, height: 420)
+    }
+}
+
+// MARK: - Model Comparison
+
+/// Captures everything needed to reproduce an assistant turn under a different
+/// model, without mutating the conversation until the user commits a choice.
+struct ModelComparisonRequest: Identifiable {
+    let id = UUID()
+    let messageID: UUID
+    let contextMessages: [ChatMessage]
+    let systemPrompt: String
+    let originalContent: String
+}
+
+/// Side-by-side comparison: the existing answer on the left, a freshly streamed
+/// answer from a chosen model on the right. The user keeps one or the other.
+struct ModelCompareView: View {
+    let request: ModelComparisonRequest
+    let aiManager: AIServiceManager
+    let candidateModels: [String]
+    let onReplace: (String) -> Void
+    let onClose: () -> Void
+
+    @State private var selectedModel: String = ""
+    @State private var altContent: String = ""
+    @State private var isGenerating = false
+    @State private var didFinish = false
+    @State private var genTask: Task<Void, Never>?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Compare Models")
+                        .font(AppTheme.Typography.headline)
+                    Text("Answer the same prompt with another model, then keep the one you prefer.")
+                        .font(AppTheme.Typography.captionSecondary)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Close", action: onClose)
+                    .keyboardShortcut(.cancelAction)
+            }
+
+            HStack(spacing: AppTheme.Spacing.sm) {
+                if candidateModels.isEmpty {
+                    Text("The active backend exposes no selectable models to compare against.")
+                        .font(AppTheme.Typography.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Picker("", selection: $selectedModel) {
+                        ForEach(candidateModels, id: \.self) { Text($0).tag($0) }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: 260)
+
+                    Button(isGenerating ? "Generating…" : (didFinish ? "Regenerate" : "Generate")) {
+                        generate()
+                    }
+                    .disabled(isGenerating || selectedModel.isEmpty)
+                }
+                Spacer()
+            }
+
+            HStack(alignment: .top, spacing: 0) {
+                compareColumn(title: "Current answer", text: request.originalContent, accent: false, showSpinner: false)
+                Divider()
+                compareColumn(
+                    title: selectedModel.isEmpty ? "Alternative" : selectedModel,
+                    text: altContent.isEmpty && !isGenerating ? "Press Generate to produce an alternative." : altContent,
+                    accent: true,
+                    showSpinner: isGenerating && altContent.isEmpty
+                )
+            }
+            .frame(maxHeight: .infinity)
+            .background {
+                RoundedRectangle(cornerRadius: 8).stroke(AppTheme.Colors.border, lineWidth: 1)
+            }
+
+            HStack {
+                Spacer()
+                Button("Keep current", action: onClose)
+                Button("Use alternative") { onReplace(altContent) }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(altContent.isEmpty || isGenerating || !didFinish)
+            }
+        }
+        .padding(AppTheme.Spacing.lg)
+        .frame(width: 820, height: 560)
+        .onAppear { selectedModel = candidateModels.first ?? "" }
+        .onDisappear { genTask?.cancel() }
+    }
+
+    private func compareColumn(title: String, text: String, accent: Bool, showSpinner: Bool) -> some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(accent ? AppTheme.Colors.accentPrimary : AppTheme.Colors.textSecondary)
+                .lineLimit(1)
+            ScrollView {
+                if showSpinner {
+                    HStack(spacing: AppTheme.Spacing.sm) {
+                        ProgressView().controlSize(.small)
+                        Text("Generating…").foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    MessageMarkdownView(text: text)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+        .padding(AppTheme.Spacing.md)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func generate() {
+        genTask?.cancel()
+        altContent = ""
+        isGenerating = true
+        didFinish = false
+        let model = selectedModel
+        genTask = Task {
+            guard let service = aiManager.currentService else {
+                isGenerating = false
+                return
+            }
+            do {
+                for try await chunk in service.streamChat(
+                    messages: request.contextMessages,
+                    systemPrompt: request.systemPrompt,
+                    modelOverride: model,
+                    parameters: aiManager.aiParameters,
+                    tools: nil
+                ) {
+                    if Task.isCancelled { break }
+                    if case .text(let text) = chunk { altContent += text }
+                }
+            } catch {
+                altContent += "\n\n⚠️ \(error.localizedDescription)"
+            }
+            isGenerating = false
+            didFinish = true
+        }
     }
 }
