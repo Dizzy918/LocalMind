@@ -17,6 +17,7 @@ struct KnowledgeBaseView: View {
     let onClose: () -> Void
 
     @AppStorage("useKnowledgeBase") private var useKnowledgeBase = false
+    @AppStorage("embeddingProvider") private var embeddingProvider = "apple"
     @State private var importError: String?
     @State private var isDropTargeted = false
 
@@ -24,6 +25,7 @@ struct KnowledgeBaseView: View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
             header
             toggleRow
+            embedderRow
             Divider()
 
             if store.documents.isEmpty {
@@ -96,6 +98,45 @@ struct KnowledgeBaseView: View {
                 }
             }
             .disabled(store.isIndexing || !store.isAvailable)
+        }
+    }
+
+    /// Picks the embedding backend (locked once documents exist). Ollama gives
+    /// better retrieval; Apple is the always-available default.
+    private var embedderRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: AppTheme.Spacing.sm) {
+                Image(systemName: "cpu")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                if store.isEmpty {
+                    Text("Embedding")
+                        .font(AppTheme.Typography.captionSecondary)
+                        .foregroundStyle(.secondary)
+                    Picker("", selection: $embeddingProvider) {
+                        Text("On-device (Apple)").tag("apple")
+                        Text("Ollama (nomic-embed-text)").tag("ollama")
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: 230)
+                    Spacer()
+                } else {
+                    Text("Indexed with \(store.embedderLabel)")
+                        .font(AppTheme.Typography.captionSecondary)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Clear all") { store.clear() }
+                        .controlSize(.small)
+                        .help("Remove all documents (needed to switch embedding model)")
+                }
+            }
+            if store.isEmpty && embeddingProvider == "ollama" {
+                Text("Needs Ollama running with the model pulled: `ollama pull nomic-embed-text`. Falls back to on-device if it's unavailable.")
+                    .font(AppTheme.Typography.captionSecondary)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 

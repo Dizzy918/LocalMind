@@ -22,7 +22,7 @@ LocalMind connects to local AI backends running on your machine and provides a c
 - **Text-to-Speech** — read AI responses aloud
 - **Vision** — drag & drop or paste images for analysis (requires a vision model like LLaVA)
 - **File Attachments** — drop PDFs and text files directly into the chat
-- **Chat with Your Documents** — add PDFs/text files to an on-device knowledge base; relevant passages are retrieved and grounded into answers (local embeddings via Apple's NaturalLanguage — nothing is uploaded)
+- **Chat with Your Documents** — add PDFs/text files (or whole folders, via picker or drag-and-drop) to a local knowledge base; relevant passages are retrieved, **cited**, and grounded into answers. Embeds on-device via Apple's NaturalLanguage by default, or via Ollama's `nomic-embed-text` for higher-quality retrieval — nothing is uploaded
 - **Per-Conversation Model & Temperature** — pin a specific model or creativity level for one chat without changing your global default
 - **Compare Models Side-by-Side** — regenerate any answer with another model and keep the one you prefer
 - **Conversation Branches** — editing or regenerating saves the previous version so you can restore it

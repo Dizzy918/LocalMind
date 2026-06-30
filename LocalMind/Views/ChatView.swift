@@ -1034,7 +1034,7 @@ struct ChatView: View {
         var retrievedSources: [MessageSource] = []
         if useKnowledgeBase,
            let lastUserMessage = conversation.messages.last(where: { $0.role == .user })?.content {
-            let hits = KnowledgeBaseStore.shared.retrieve(lastUserMessage)
+            let hits = await KnowledgeBaseStore.shared.retrieve(lastUserMessage)
             if !hits.isEmpty {
                 let excerpts = hits.enumerated()
                     .map { "[\($0.offset + 1)] (\($0.element.documentName)) \($0.element.text)" }
