@@ -25,6 +25,13 @@ struct KnowledgeDocument: Codable, Identifiable, Sendable {
     var chunkCount: Int
 }
 
+/// A retrieval result paired with its source document name (for citations).
+struct KnowledgeHit: Sendable {
+    let documentName: String
+    let text: String
+    let score: Double
+}
+
 private struct KnowledgeArchive: Codable {
     var documents: [KnowledgeDocument]
     var chunks: [KnowledgeChunk]
@@ -103,6 +110,19 @@ final class KnowledgeBaseStore {
             .sorted { $0.score > $1.score }
             .prefix(topK)
             .map { $0.chunk }
+    }
+
+    /// Like `search`, but pairs each hit with its source document name so the
+    /// answer can cite where it came from.
+    func retrieve(_ query: String, topK: Int = 4, threshold: Double = 0.15) -> [KnowledgeHit] {
+        guard !chunks.isEmpty, let queryVector = EmbeddingService.embed(query) else { return [] }
+        let names = Dictionary(documents.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+        return chunks
+            .map { (chunk: $0, score: EmbeddingService.cosineSimilarity(queryVector, $0.embedding)) }
+            .filter { $0.score >= threshold }
+            .sorted { $0.score > $1.score }
+            .prefix(topK)
+            .map { KnowledgeHit(documentName: names[$0.chunk.documentID] ?? "Document", text: $0.chunk.text, score: $0.score) }
     }
 
     // MARK: - Persistence

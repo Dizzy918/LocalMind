@@ -211,6 +211,7 @@ struct MessageBubble: View {
     var onEdit: ((String) -> Void)? = nil
     var onRegenerate: (() -> Void)? = nil
     var onCompare: (() -> Void)? = nil
+    var onSelectVariant: ((Int) -> Void)? = nil
 
     init(
         message: ChatMessage,
@@ -219,7 +220,8 @@ struct MessageBubble: View {
         onDelete: (() -> Void)? = nil,
         onEdit: ((String) -> Void)? = nil,
         onRegenerate: (() -> Void)? = nil,
-        onCompare: (() -> Void)? = nil
+        onCompare: (() -> Void)? = nil,
+        onSelectVariant: ((Int) -> Void)? = nil
     ) {
         self.message = message
         self.isStreaming = isStreaming
@@ -228,6 +230,7 @@ struct MessageBubble: View {
         self.onEdit = onEdit
         self.onRegenerate = onRegenerate
         self.onCompare = onCompare
+        self.onSelectVariant = onSelectVariant
     }
 
     private var isUser: Bool { message.role == .user }
@@ -266,6 +269,10 @@ struct MessageBubble: View {
 
                     if isStreaming && !isUser {
                         PulsingDot(size: 6)
+                    }
+
+                    if !isUser, let onSelectVariant, (message.variants?.count ?? 0) > 1 {
+                        variantNavigator(onSelect: onSelectVariant)
                     }
                 }
 
@@ -352,6 +359,11 @@ struct MessageBubble: View {
                         RoundedRectangle(cornerRadius: AppTheme.Dimensions.cornerRadiusLarge)
                             .fill(AppTheme.Colors.accentPrimary.opacity(0.12))
                     }
+                }
+
+                // RAG citations — which documents grounded this answer.
+                if !isUser, let sources = message.sources, !sources.isEmpty {
+                    sourcesFooter(sources)
                 }
 
                 // Action bar — always laid out when not editing so hovering
@@ -470,6 +482,53 @@ struct MessageBubble: View {
             return userText.isEmpty ? "Analyze this file" : userText
         }
         return message.content
+    }
+
+    /// ‹ i/n › navigator to flip between alternative generations of this turn.
+    private func variantNavigator(onSelect: @escaping (Int) -> Void) -> some View {
+        let count = message.variants?.count ?? 0
+        let active = message.activeVariantIndex ?? 0
+        return HStack(spacing: 4) {
+            Button { onSelect(active - 1) } label: {
+                Image(systemName: "chevron.left")
+            }
+            .buttonStyle(.plain)
+            .disabled(active <= 0)
+
+            Text("\(active + 1)/\(count)")
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+
+            Button { onSelect(active + 1) } label: {
+                Image(systemName: "chevron.right")
+            }
+            .buttonStyle(.plain)
+            .disabled(active >= count - 1)
+        }
+        .font(.system(size: 9, weight: .semibold))
+        .foregroundStyle(AppTheme.Colors.textTertiary)
+        .help("Switch between regenerated versions")
+    }
+
+    /// Chips naming the documents this answer was grounded in; hover shows the
+    /// matched snippet. De-duplicated by document.
+    private func sourcesFooter(_ sources: [MessageSource]) -> some View {
+        var seen = Set<String>()
+        let unique = sources.filter { seen.insert($0.documentName).inserted }
+        return HStack(spacing: 6) {
+            Image(systemName: "doc.text.magnifyingglass")
+                .font(.system(size: 10))
+                .foregroundStyle(AppTheme.Colors.textTertiary)
+            ForEach(unique) { source in
+                Text(source.documentName)
+                    .font(.system(size: 10, weight: .medium))
+                    .lineLimit(1)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(AppTheme.Colors.backgroundSecondary))
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .help(source.snippet)
+            }
+        }
     }
 }
 

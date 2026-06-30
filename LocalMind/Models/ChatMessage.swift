@@ -13,6 +13,19 @@ nonisolated enum MessageRole: String, Codable, Sendable {
     case system
 }
 
+/// A knowledge-base passage an answer was grounded in (RAG citation).
+nonisolated struct MessageSource: Codable, Identifiable, Sendable {
+    let id: UUID
+    let documentName: String
+    let snippet: String
+
+    init(id: UUID = UUID(), documentName: String, snippet: String) {
+        self.id = id
+        self.documentName = documentName
+        self.snippet = snippet
+    }
+}
+
 nonisolated struct ChatMessage: Identifiable, Codable, Sendable {
     let id: UUID
     let role: MessageRole
@@ -21,6 +34,13 @@ nonisolated struct ChatMessage: Identifiable, Codable, Sendable {
     var attachedFileName: String? // e.g. "report.pdf"
     var attachedFileContent: String? // The extracted text from the file, sent to the AI
     let timestamp: Date
+
+    /// Knowledge-base passages this answer cited (RAG). nil/empty = none.
+    var sources: [MessageSource]?
+    /// Alternative generations for this turn. When present, `content` mirrors
+    /// `variants[activeVariantIndex]`; nil/≤1 means a single answer.
+    var variants: [String]?
+    var activeVariantIndex: Int?
 
     init(id: UUID = UUID(), role: MessageRole, content: String, imageData: Data? = nil, attachedFileName: String? = nil, attachedFileContent: String? = nil, timestamp: Date = Date()) {
         self.id = id

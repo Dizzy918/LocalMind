@@ -55,6 +55,10 @@ struct ChatView: View {
     // Conversation branches (versions saved on edit/regenerate)
     @State private var showingBranches = false
 
+    // Carry-over of earlier answers when re-rolling the latest turn into
+    // switchable per-turn variants.
+    @State private var pendingVariants: [String]?
+
     // Knowledge base ("chat with your documents")
     @State private var showingKnowledgeBase = false
     @AppStorage("useKnowledgeBase") private var useKnowledgeBase = false
@@ -537,7 +541,8 @@ struct ChatView: View {
                             onDelete: { deleteMessage(message) },
                             onEdit: message.role == .user ? { newContent in editAndResend(message: message, newContent: newContent) } : nil,
                             onRegenerate: message.role == .assistant ? { regenerate(from: message) } : nil,
-                            onCompare: message.role == .assistant ? { startComparison(for: message) } : nil
+                            onCompare: message.role == .assistant ? { startComparison(for: message) } : nil,
+                            onSelectVariant: message.role == .assistant ? { index in selectVariant(for: message, index: index) } : nil
                         )
                         .id(message.id)
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
@@ -1026,12 +1031,13 @@ struct ChatView: View {
         // Retrieval-augmented generation: when the user has enabled their
         // document store, pull the most relevant chunks for the latest question
         // and prepend them so the model can ground its answer in those docs.
+        var retrievedSources: [MessageSource] = []
         if useKnowledgeBase,
            let lastUserMessage = conversation.messages.last(where: { $0.role == .user })?.content {
-            let hits = KnowledgeBaseStore.shared.search(lastUserMessage)
+            let hits = KnowledgeBaseStore.shared.retrieve(lastUserMessage)
             if !hits.isEmpty {
                 let excerpts = hits.enumerated()
-                    .map { "[\($0.offset + 1)] \($0.element.text)" }
+                    .map { "[\($0.offset + 1)] (\($0.element.documentName)) \($0.element.text)" }
                     .joined(separator: "\n\n")
                 systemPrompt = """
                 The user has shared personal documents. Use the excerpts below to answer when they're relevant, and say so plainly if they don't contain the answer. Don't invent details they don't support.
@@ -1042,6 +1048,9 @@ struct ChatView: View {
 
                 \(systemPrompt)
                 """
+                retrievedSources = hits.map {
+                    MessageSource(documentName: $0.documentName, snippet: String($0.text.prefix(180)))
+                }
             }
         }
 
@@ -1090,7 +1099,17 @@ struct ChatView: View {
                 }
 
                 if !streamingContent.isEmpty {
-                    let assistantMessage = ChatMessage(role: .assistant, content: streamingContent)
+                    var assistantMessage = ChatMessage(role: .assistant, content: streamingContent)
+                    if !retrievedSources.isEmpty {
+                        assistantMessage.sources = retrievedSources
+                    }
+                    // If this generation re-rolled the previous answer, keep the
+                    // earlier answer(s) as switchable variants of this turn.
+                    if let pending = pendingVariants {
+                        assistantMessage.variants = pending + [streamingContent]
+                        assistantMessage.activeVariantIndex = pending.count
+                    }
+                    pendingVariants = nil
                     conversation.messages.append(assistantMessage)
                     conversation.updatedAt = Date()
                     dataStore.saveConversation(conversation)
@@ -1157,15 +1176,32 @@ struct ChatView: View {
 
         if isStreaming { stopStreaming() }
 
-        // Preserve the answer (and tail) we're about to throw away.
-        snapshotBranch(divergingAt: index, label: "Before regenerate")
-
-        // Drop the AI message and everything after it
-        conversation.messages = Array(conversation.messages[..<index])
+        if index == conversation.messages.count - 1 {
+            // Re-rolling the latest answer: keep the existing answer(s) as
+            // switchable variants of this turn (the ‹ i/n › navigator).
+            pendingVariants = message.variants ?? [message.content]
+            conversation.messages = Array(conversation.messages[..<index])
+        } else {
+            // Mid-conversation: the tail below would be invalidated, so snapshot
+            // the whole path and truncate instead of making per-turn variants.
+            snapshotBranch(divergingAt: index, label: "Before regenerate")
+            conversation.messages = Array(conversation.messages[..<index])
+        }
         conversation.updatedAt = Date()
         dataStore.saveConversation(conversation)
 
         currentStreamTask = Task { await generateResponse() }
+    }
+
+    /// Switch which stored variant of an assistant turn is displayed.
+    private func selectVariant(for message: ChatMessage, index: Int) {
+        guard let i = conversation.messages.firstIndex(where: { $0.id == message.id }),
+              let variants = conversation.messages[i].variants,
+              index >= 0, index < variants.count else { return }
+        conversation.messages[i].activeVariantIndex = index
+        conversation.messages[i].content = variants[index]
+        conversation.updatedAt = Date()
+        dataStore.saveConversation(conversation)
     }
 
     // MARK: - Branches
@@ -1223,12 +1259,17 @@ struct ChatView: View {
         currentStreamTask?.cancel()
         
         if !streamingContent.isEmpty {
-            let partialMessage = ChatMessage(role: .assistant, content: streamingContent + "\n\n*[Generation stopped]*")
+            var partialMessage = ChatMessage(role: .assistant, content: streamingContent + "\n\n*[Generation stopped]*")
+            if let pending = pendingVariants {
+                partialMessage.variants = pending + [partialMessage.content]
+                partialMessage.activeVariantIndex = pending.count
+            }
             conversation.messages.append(partialMessage)
             conversation.updatedAt = Date()
             dataStore.saveConversation(conversation)
         }
-        
+        pendingVariants = nil
+
         streamingContent = ""
         isStreaming = false
     }
