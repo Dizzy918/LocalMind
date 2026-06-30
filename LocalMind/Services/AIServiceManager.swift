@@ -19,6 +19,7 @@ import SwiftUI
 /// Uses `@Observable` for SwiftUI integration — any view that reads
 /// `currentBackend`, `statusMessage`, etc. will automatically update.
 @Observable
+@MainActor
 final class AIServiceManager {
     /// The currently active AI service (nil when no backend is available).
     private(set) var currentService: (any AIServiceProtocol)?
@@ -108,7 +109,9 @@ final class AIServiceManager {
     private let ollamaService = OllamaService()
     private var openAIService: OpenAICompatibleService?
     private var appleService: (any AIServiceProtocol)?
-    private var pollingTask: Task<Void, Never>?
+    // nonisolated so deinit (which is itself nonisolated on a MainActor
+    // class) can cancel the task without hopping back to the main actor.
+    private nonisolated(unsafe) var pollingTask: Task<Void, Never>?
     
     /// Reference to MCP service for tool integration
     weak var mcpService: MCPService?

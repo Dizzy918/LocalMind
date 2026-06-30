@@ -11,6 +11,8 @@ struct MCPSettingsView: View {
     @State private var showingCatalog = false
     @State private var editingConfig: MCPServerConfig?
     @State private var showingCustomServer = false
+    @State private var logsServerName: String?
+    @State private var toolsServerName: String?
 
     var body: some View {
         ScrollView {
@@ -42,6 +44,22 @@ struct MCPSettingsView: View {
         .sheet(isPresented: $showingCustomServer) {
             AddCustomServerView(mcpService: mcpService) {
                 showingCustomServer = false
+            }
+        }
+        .sheet(item: Binding(
+            get: { logsServerName.map(MCPLogIdentifier.init) },
+            set: { logsServerName = $0?.name }
+        )) { ident in
+            MCPLogSheet(mcpService: mcpService, serverName: ident.name) {
+                logsServerName = nil
+            }
+        }
+        .sheet(item: Binding(
+            get: { toolsServerName.map(MCPLogIdentifier.init) },
+            set: { toolsServerName = $0?.name }
+        )) { ident in
+            MCPToolsSheet(mcpService: mcpService, serverName: ident.name) {
+                toolsServerName = nil
             }
         }
     }
@@ -100,7 +118,9 @@ struct MCPSettingsView: View {
                         onToggle: { await mcpService.toggleServer(config) },
                         onReconnect: { await mcpService.reconnect(config) },
                         onEdit: { editingConfig = config },
-                        onDelete: { await mcpService.removeServer(config) }
+                        onDelete: { await mcpService.removeServer(config) },
+                        onShowLogs: { logsServerName = config.name },
+                        onShowTools: { toolsServerName = config.name }
                     )
                 }
             }
@@ -196,6 +216,8 @@ struct MCPServerRowView: View {
     let onReconnect: () async -> Void
     let onEdit: () -> Void
     let onDelete: () async -> Void
+    let onShowLogs: () -> Void
+    let onShowTools: () -> Void
 
     var body: some View {
         HStack(spacing: AppTheme.Spacing.md) {
@@ -242,6 +264,16 @@ struct MCPServerRowView: View {
                     } label: {
                         Label("Reconnect", systemImage: "arrow.clockwise")
                     }
+                }
+                Button {
+                    onShowLogs()
+                } label: {
+                    Label("Show Logs", systemImage: "doc.text.magnifyingglass")
+                }
+                Button {
+                    onShowTools()
+                } label: {
+                    Label("Tools…", systemImage: "wrench.and.screwdriver")
                 }
                 Button("Edit", action: onEdit)
                 Button("Delete", role: .destructive) {
@@ -452,5 +484,188 @@ struct EditMCPServerView: View {
             }
         }
         return result
+    }
+}
+
+// MARK: - Log Sheet
+
+/// `sheet(item:)` needs an Identifiable wrapper because the bound value
+/// (server name `String`) isn't itself Identifiable.
+struct MCPLogIdentifier: Identifiable {
+    let name: String
+    var id: String { name }
+}
+
+struct MCPLogSheet: View {
+    let mcpService: MCPService
+    let serverName: String
+    let onDismiss: () -> Void
+
+    @State private var lines: [MCPLogLine] = []
+    @State private var refreshTimer: Timer?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+            HStack {
+                Text("\(serverName) logs")
+                    .font(AppTheme.Typography.title2)
+                Spacer()
+                Button("Clear") {
+                    Task {
+                        await mcpService.clearLogs(for: serverName)
+                        lines = []
+                    }
+                }
+                .disabled(lines.isEmpty)
+                Button("Close", action: onDismiss)
+                    .keyboardShortcut(.cancelAction)
+            }
+
+            if lines.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "doc.text")
+                        .font(.system(size: 32))
+                        .foregroundStyle(.secondary)
+                    Text("No log output yet.")
+                        .font(AppTheme.Typography.captionSecondary)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 2) {
+                            ForEach(lines) { line in
+                                HStack(alignment: .top, spacing: 8) {
+                                    Text(timeString(line.timestamp))
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundStyle(.tertiary)
+                                        .frame(width: 60, alignment: .leading)
+                                    Text(line.text)
+                                        .font(.system(size: 11, design: .monospaced))
+                                        .foregroundStyle(line.source == .transport ? .orange : .primary)
+                                        .textSelection(.enabled)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                .id(line.id)
+                            }
+                        }
+                        .padding(8)
+                    }
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(AppTheme.Colors.backgroundSecondary)
+                    )
+                    .onChange(of: lines.count) { _, _ in
+                        if let last = lines.last {
+                            withAnimation(.easeOut(duration: 0.15)) {
+                                proxy.scrollTo(last.id, anchor: .bottom)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(AppTheme.Spacing.xl)
+        .frame(width: 680, height: 480)
+        .task { await reload() }
+        // Cheap polling — the ring buffer is on the actor; an actor signal
+        // would be cleaner but this sheet is transient and 1Hz refresh is
+        // invisible to the user.
+        .onAppear {
+            refreshTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+                Task { @MainActor in await reload() }
+            }
+        }
+        .onDisappear {
+            refreshTimer?.invalidate()
+            refreshTimer = nil
+        }
+    }
+
+    private func reload() async {
+        lines = await mcpService.recentLogs(for: serverName)
+    }
+
+    private func timeString(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter.string(from: date)
+    }
+}
+
+// MARK: - Tools Sheet
+
+struct MCPToolsSheet: View {
+    let mcpService: MCPService
+    let serverName: String
+    let onDismiss: () -> Void
+
+    var body: some View {
+        let tools = mcpService.allToolsByServer[serverName] ?? []
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(serverName) tools")
+                        .font(AppTheme.Typography.title2)
+                    Text("Disabled tools are hidden from the model entirely.")
+                        .font(AppTheme.Typography.captionSecondary)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Close", action: onDismiss)
+                    .keyboardShortcut(.cancelAction)
+            }
+
+            if tools.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "wrench.and.screwdriver")
+                        .font(.system(size: 32))
+                        .foregroundStyle(.secondary)
+                    Text("No tools available — the server isn't connected.")
+                        .font(AppTheme.Typography.captionSecondary)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    VStack(spacing: 4) {
+                        ForEach(tools) { tool in
+                            let enabled = mcpService.isToolEnabled(server: serverName, tool: tool.name)
+                            HStack(alignment: .top, spacing: 12) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(tool.name)
+                                        .font(.system(size: 13, weight: .medium, design: .monospaced))
+                                        .foregroundStyle(enabled ? .primary : .secondary)
+                                    if let desc = tool.description, !desc.isEmpty {
+                                        Text(desc)
+                                            .font(AppTheme.Typography.captionSecondary)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(3)
+                                    }
+                                }
+                                Spacer()
+                                Toggle("", isOn: Binding(
+                                    get: { enabled },
+                                    set: { newValue in
+                                        Task {
+                                            await mcpService.setToolEnabled(newValue, server: serverName, tool: tool.name)
+                                        }
+                                    }
+                                ))
+                                .labelsHidden()
+                            }
+                            .padding(10)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(AppTheme.Colors.backgroundSecondary)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        .padding(AppTheme.Spacing.xl)
+        .frame(width: 580, height: 520)
     }
 }

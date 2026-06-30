@@ -55,6 +55,31 @@ final class DataStore {
         ensureDirectories()
         loadAll()
         buildSearchIndex()
+        adoptOrphansForExistingProfile()
+    }
+
+    /// Test-only initializer that lets the suite point at an isolated
+    /// temp directory instead of the user's real Application Support
+    /// folder. Production code MUST use `init()`; this overload exists
+    /// only so XCTest can run without polluting the user's chat history.
+    init(baseDirectoryOverride: URL) {
+        baseDirectory = baseDirectoryOverride
+        ensureDirectories()
+        loadAll()
+        buildSearchIndex()
+    }
+
+    /// Upgrade path: if profiles already exist (user signed in on a prior
+    /// build) but conversations are still orphans (created before the
+    /// profile feature shipped), claim them for the currently-active
+    /// profile. Without this, those conversations would silently
+    /// disappear from the sidebar after the upgrade.
+    private func adoptOrphansForExistingProfile() {
+        guard let raw = UserDefaults.standard.string(forKey: "activeProfileID"),
+              let uuid = UUID(uuidString: raw) else { return }
+        let hasOrphans = conversations.contains { $0.profileID == nil }
+        guard hasOrphans else { return }
+        claimOrphanConversations(forProfile: uuid)
     }
 
     // MARK: - Directory Management
@@ -129,18 +154,47 @@ final class DataStore {
     // MARK: - Conversations
 
     func saveConversation(_ conversation: Conversation) {
-        if let index = conversations.firstIndex(where: { $0.id == conversation.id }) {
-            conversations[index] = conversation
+        // Stamp the current profile onto unstamped conversations so they
+        // belong to the signed-in user. Existing stamped conversations
+        // stay with their original owner.
+        var stamped = conversation
+        if stamped.profileID == nil,
+           let raw = UserDefaults.standard.string(forKey: "activeProfileID"),
+           let uuid = UUID(uuidString: raw) {
+            stamped.profileID = uuid
+        }
+        if let index = conversations.firstIndex(where: { $0.id == stamped.id }) {
+            conversations[index] = stamped
         } else {
-            conversations.insert(conversation, at: 0)
+            conversations.insert(stamped, at: 0)
         }
 
-        let url = conversationURL(for: conversation.id)
-        if let data = try? JSONEncoder().encode(conversation) {
+        let url = conversationURL(for: stamped.id)
+        if let data = try? JSONEncoder().encode(stamped) {
             writeWithCompression(data, to: url)
         }
 
-        updateSearchIndex(for: conversation)
+        updateSearchIndex(for: stamped)
+    }
+
+    /// One-time migration: when the user creates their first profile, claim
+    /// any orphan conversations (profileID == nil) for it. Subsequent
+    /// profiles start fresh.
+    func claimOrphanConversations(forProfile profileID: UUID) {
+        var changed = 0
+        for (idx, convo) in conversations.enumerated() where convo.profileID == nil {
+            var updated = convo
+            updated.profileID = profileID
+            conversations[idx] = updated
+            let url = conversationURL(for: updated.id)
+            if let data = try? JSONEncoder().encode(updated) {
+                writeWithCompression(data, to: url)
+            }
+            changed += 1
+        }
+        if changed > 0 {
+            print("DataStore: migrated \(changed) orphan conversation(s) to profile \(profileID)")
+        }
     }
 
     func deleteConversation(_ conversation: Conversation) {
@@ -198,9 +252,20 @@ final class DataStore {
     }
 
     func conversationsForSelection(_ selection: SidebarSelection, includeArchived: Bool = false) -> [Conversation] {
-        conversations
+        let activeID = activeProfileID()
+        return conversations
             .filter { !$0.messages.isEmpty }
             .filter { includeArchived || !$0.isArchived }
+            // Hide conversations owned by other profiles. Orphan conversations
+            // (profileID == nil) are visible only when there's no active
+            // profile — they get claimed on first profile creation.
+            .filter { convo in
+                if let active = activeID {
+                    return convo.profileID == active
+                } else {
+                    return convo.profileID == nil
+                }
+            }
             .filter {
                 switch selection {
                 case .chat:
@@ -216,10 +281,23 @@ final class DataStore {
             }
     }
 
+    private func activeProfileID() -> UUID? {
+        guard let raw = UserDefaults.standard.string(forKey: "activeProfileID") else { return nil }
+        return UUID(uuidString: raw)
+    }
+
     /// Returns archived conversations for the given selection.
     func archivedConversations(for selection: SidebarSelection) -> [Conversation] {
-        conversations
+        let activeID = activeProfileID()
+        return conversations
             .filter { !$0.messages.isEmpty && $0.isArchived }
+            .filter { convo in
+                if let active = activeID {
+                    return convo.profileID == active
+                } else {
+                    return convo.profileID == nil
+                }
+            }
             .filter {
                 switch selection {
                 case .chat:

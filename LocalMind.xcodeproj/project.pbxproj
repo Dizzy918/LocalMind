@@ -22,9 +22,9 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		B626D3372FEFBD0800842163 /* LocalMindTests */ = {
+		B626D3372FEFBD0800842163 /* Tests/LocalMindTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = LocalMindTests;
+			path = Tests/LocalMindTests;
 			sourceTree = "<group>";
 		};
 		B6B1AEC72FE68AB5008215AA /* LocalMind */ = {
@@ -52,7 +52,7 @@
 			isa = PBXGroup;
 			children = (
 				B6B1AEC72FE68AB5008215AA /* LocalMind */,
-				B626D3372FEFBD0800842163 /* LocalMindTests */,
+				B626D3372FEFBD0800842163 /* Tests/LocalMindTests */,
 				B6B1AEC62FE68AB5008215AA /* Products */,
 			);
 			sourceTree = "<group>";
@@ -83,7 +83,7 @@
 				B626D33B2FEFBD0800842163 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
-				B626D3372FEFBD0800842163 /* LocalMindTests */,
+				B626D3372FEFBD0800842163 /* Tests/LocalMindTests */,
 			);
 			name = LocalMindTests;
 			productName = LocalMindTests;
@@ -353,7 +353,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = GN8QQLA67C;
-				ENABLE_APP_SANDBOX = YES;
+				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
@@ -409,7 +409,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = GN8QQLA67C;
-				ENABLE_APP_SANDBOX = YES;
+				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;

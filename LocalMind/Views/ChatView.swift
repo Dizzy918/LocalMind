@@ -149,11 +149,16 @@ struct ChatView: View {
             }
         }
         .onChange(of: inputText) { _, newValue in
+            // Capture the conversation id NOW, not inside the task. If the
+            // user switches chats within the 2s debounce window, the binding
+            // will resolve to a different conversation by the time the task
+            // fires — and we'd overwrite the wrong draft key.
+            let conversationID = conversation.id
             draftSaveTask?.cancel()
             draftSaveTask = Task {
                 try? await Task.sleep(for: .seconds(2))
                 guard !Task.isCancelled else { return }
-                UserDefaults.standard.set(newValue, forKey: "draft_\(conversation.id.uuidString)")
+                UserDefaults.standard.set(newValue, forKey: "draft_\(conversationID.uuidString)")
             }
         }
     }
@@ -182,6 +187,21 @@ struct ChatView: View {
 
             Spacer()
 
+            // Per-conversation system-prompt override (left of export). Uses a
+            // "tuning sliders" glyph so it reads as conversation behaviour /
+            // custom instructions rather than a profile/account control.
+            Button {
+                showingSystemPromptEditor = true
+            } label: {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 14))
+                    .foregroundStyle(conversation.systemPromptOverride != nil ? AppTheme.Colors.accentPrimary : AppTheme.Colors.textTertiary)
+                    .symbolVariant(conversation.systemPromptOverride != nil ? .fill : .none)
+            }
+            .buttonStyle(.plain)
+            .help(conversation.systemPromptOverride != nil ? "Custom instructions set for this conversation" : "Set custom instructions for this conversation")
+
+            // Export menu — kept furthest right.
             Menu {
                 Button {
                     exportChat(as: .markdown)
@@ -218,16 +238,6 @@ struct ChatView: View {
             .fixedSize()
             .disabled(conversation.messages.isEmpty)
             .help("Export conversation")
-
-            Button {
-                showingSystemPromptEditor = true
-            } label: {
-                Image(systemName: conversation.systemPromptOverride != nil ? "person.crop.circle.badge.checkmark" : "person.crop.circle")
-                    .font(.system(size: 14))
-                    .foregroundStyle(conversation.systemPromptOverride != nil ? AppTheme.Colors.accentPrimary : AppTheme.Colors.textTertiary)
-            }
-            .buttonStyle(.plain)
-            .help(conversation.systemPromptOverride != nil ? "Custom system prompt set" : "Set custom system prompt for this conversation")
         }
         .padding(.horizontal, AppTheme.Spacing.xl)
         .padding(.vertical, AppTheme.Spacing.sm)
@@ -699,7 +709,15 @@ struct ChatView: View {
         if let override = conversation.systemPromptOverride, !override.isEmpty {
             systemPrompt = override
         }
-        
+
+        // Prepend the active profile's Personal Context. This is the user's
+        // portable, cross-provider memory — facts about them the AI should
+        // know on every chat, regardless of which backend is active.
+        let personalContext = ProfileStore.currentPersonalContext()
+        if !personalContext.isEmpty {
+            systemPrompt = personalContext + "\n\n---\n\n" + systemPrompt
+        }
+
         // Apply context limit
         let contextLimit = UserDefaults.standard.integer(forKey: "contextMessageLimit")
         let limit = contextLimit > 0 ? contextLimit : 10

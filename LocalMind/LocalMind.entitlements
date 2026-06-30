@@ -2,9 +2,17 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>com.apple.security.app-sandbox</key>
-	<true/>
+	<!--
+	  App sandbox intentionally disabled: LocalMind launches user-installed
+	  MCP servers via stdio (npx, node, python, custom binaries) and talks
+	  to local LLM runners (Ollama). Both require spawning arbitrary
+	  executables outside the app bundle and reading user PATH locations
+	  like /usr/local/bin and nvm/fnm/volta shim dirs — a sandbox blocks
+	  both. Same trade-off as Claude Desktop, Cursor, and LM Studio.
+	-->
 	<key>com.apple.security.network.client</key>
+	<true/>
+	<key>com.apple.security.network.server</key>
 	<true/>
 	<key>com.apple.security.files.user-selected.read-only</key>
 	<true/>
@@ -14,5 +22,10 @@
 	<true/>
 	<key>com.apple.security.device.audio-input</key>
 	<true/>
+	<!-- Sign in with Apple. Without this Apple returns error 1000. -->
+	<key>com.apple.developer.applesignin</key>
+	<array>
+		<string>Default</string>
+	</array>
 </dict>
 </plist>

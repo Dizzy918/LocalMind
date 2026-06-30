@@ -13,9 +13,16 @@ struct SettingsView: View {
     let aiManager: AIServiceManager
     let dataStore: DataStore
     let mcpService: MCPService?
-    
+    let profileStore: ProfileStore
+
     @State private var selectedTab: SettingsTab = .general
     @State private var importStatus: String = ""
+
+    /// Optional deep-link tab. Anything in the app that wants Settings to
+    /// land on a specific tab writes the tab's rawValue to this UserDefaults
+    /// key BEFORE opening Settings; SettingsView reads it once on appear
+    /// and then clears it so the next open isn't pinned to the same tab.
+    static let deepLinkTabKey = "settingsDeepLinkTab"
     
     // New AppStorage bindings
     @AppStorage("isDarkMode") private var isDarkMode: Bool = true
@@ -27,16 +34,18 @@ struct SettingsView: View {
     
     enum SettingsTab: String, CaseIterable {
         case general = "General"
+        case profile = "Profile"
         case providers = "Providers"
-        case chat = "Chat Options"
-        case data = "Data & Privacy"
-        case customTools = "Custom Tools"
-        case mcp = "MCP Servers"
+        case chat = "Chat"
+        case data = "Data"
+        case customTools = "Tools"
+        case mcp = "MCP"
         case about = "About"
-        
+
         var icon: String {
             switch self {
             case .general: return "gear"
+            case .profile: return "person.crop.circle"
             case .providers: return "network"
             case .chat: return "message"
             case .data: return "lock.shield"
@@ -52,7 +61,11 @@ struct SettingsView: View {
             generalTab
                 .tabItem { Label(SettingsTab.general.rawValue, systemImage: SettingsTab.general.icon) }
                 .tag(SettingsTab.general)
-            
+
+            ProfileSettingsView(profileStore: profileStore)
+                .tabItem { Label(SettingsTab.profile.rawValue, systemImage: SettingsTab.profile.icon) }
+                .tag(SettingsTab.profile)
+
             providersTab
                 .tabItem { Label(SettingsTab.providers.rawValue, systemImage: SettingsTab.providers.icon) }
                 .tag(SettingsTab.providers)
@@ -79,7 +92,19 @@ struct SettingsView: View {
                 .tabItem { Label(SettingsTab.about.rawValue, systemImage: SettingsTab.about.icon) }
                 .tag(SettingsTab.about)
         }
-        .frame(width: 550, height: 550)
+        .frame(width: 720, height: 580)
+        .onAppear { consumeDeepLinkIfAny() }
+    }
+
+    /// Reads the one-shot deep-link tab key set by callers like the
+    /// sidebar avatar's "Manage Profile" item, jumps the TabView there,
+    /// and then clears the key so the next Settings open uses whichever
+    /// tab the user last picked.
+    private func consumeDeepLinkIfAny() {
+        guard let raw = UserDefaults.standard.string(forKey: Self.deepLinkTabKey),
+              let tab = SettingsTab(rawValue: raw) else { return }
+        selectedTab = tab
+        UserDefaults.standard.removeObject(forKey: Self.deepLinkTabKey)
     }
     
     // MARK: - General Tab

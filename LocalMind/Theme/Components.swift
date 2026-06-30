@@ -492,41 +492,114 @@ struct MessageActionButton: View {
 struct StatusBadge: View {
     let backend: AIBackend
     let statusMessage: String
+    var modelName: String? = nil
     var isCompact: Bool = false
-    
-    private var statusColor: Color {
+
+    // Hover peeks the details bubble; a click pins it open (so it survives
+    // moving the cursor away). Dismiss by clicking the dot again or outside.
+    @State private var showingDetails = false
+    @State private var isPinned = false
+    @State private var hoverCloseTask: Task<Void, Never>?
+
+    private var isConnected: Bool {
         switch backend {
         case .appleFoundationModels, .ollama, .openAICompatible:
-            return AppTheme.Colors.statusOnline
+            return true
         case .none:
-            return AppTheme.Colors.statusOffline
+            return false
         }
     }
-    
+
+    private var statusColor: Color {
+        isConnected ? AppTheme.Colors.statusOnline : AppTheme.Colors.statusOffline
+    }
+
     var body: some View {
-        HStack(spacing: AppTheme.Spacing.sm) {
-            Circle()
-                .fill(statusColor)
-                .frame(width: 8, height: 8)
-                .help(isCompact ? statusMessage : "")
-            
-            if !isCompact {
+        // Just a dot — all the detail lives in the popover on hover/click.
+        Circle()
+            .fill(statusColor)
+            .frame(width: 9, height: 9)
+            .overlay {
+                // Soft halo so the small dot reads as an affordance and gives
+                // a comfortable hover/click target.
+                Circle()
+                    .stroke(statusColor.opacity(0.25), lineWidth: 5)
+            }
+            .frame(width: 22, height: 22)        // generous hit area
+            .contentShape(Circle())
+            .onTapGesture {
+                isPinned.toggle()
+                showingDetails = isPinned
+            }
+            .onHover { hovering in
+                hoverCloseTask?.cancel()
+                if hovering {
+                    showingDetails = true
+                } else if !isPinned {
+                    // Small grace period so flicking past the dot doesn't
+                    // instantly dismiss, and so you can move onto the popover.
+                    hoverCloseTask = Task {
+                        try? await Task.sleep(for: .milliseconds(350))
+                        if !Task.isCancelled, !isPinned {
+                            showingDetails = false
+                        }
+                    }
+                }
+            }
+            .popover(isPresented: $showingDetails, arrowEdge: .top) {
+                detailsPopover
+            }
+            .onChange(of: showingDetails) { _, shown in
+                // Outside-click / Esc dismissal also clears the pin.
+                if !shown { isPinned = false }
+            }
+            .help(isConnected ? "Connected — click for details" : "Not connected — click for details")
+    }
+
+    private var detailsPopover: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+            HStack(spacing: AppTheme.Spacing.sm) {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 8, height: 8)
+                Text(isConnected ? "Connected" : "Not connected")
+                    .font(.headline)
+            }
+
+            if isConnected {
+                Divider()
+                detailRow(icon: backend.icon, label: "Backend", value: backend.rawValue)
+                if let modelName, !modelName.isEmpty {
+                    detailRow(icon: "cpu", label: "Model", value: modelName)
+                }
+            }
+
+            if !statusMessage.isEmpty {
                 Text(statusMessage)
-                    .font(AppTheme.Typography.captionSecondary)
-                    .foregroundStyle(AppTheme.Colors.textSecondary)
-                    .lineLimit(1)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(.horizontal, isCompact ? 0 : AppTheme.Spacing.md)
-        .padding(.vertical, isCompact ? 0 : AppTheme.Spacing.xs)
-        .background {
-            if !isCompact {
-                Capsule()
-                    .fill(statusColor.opacity(0.1))
-                    .overlay {
-                        Capsule().stroke(statusColor.opacity(0.2), lineWidth: 1)
-                    }
-            }
+        .padding(AppTheme.Spacing.md)
+        .frame(width: 240, alignment: .leading)
+    }
+
+    private func detailRow(icon: String, label: String, value: String) -> some View {
+        HStack(spacing: AppTheme.Spacing.sm) {
+            Image(systemName: icon)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+                .lineLimit(1)
+                .truncationMode(.middle)
         }
     }
 }

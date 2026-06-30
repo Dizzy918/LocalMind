@@ -15,12 +15,15 @@ final class DataStoreTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        // Use a fresh test directory for each test
+        // Fresh isolated temp directory per test, passed explicitly to
+        // DataStore via the test-only initializer. Without this, every
+        // test run would leak conversations into the user's real
+        // Application Support folder.
         testDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("LocalMindTests-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: testDir, withIntermediateDirectories: true)
 
-        dataStore = DataStore()
+        dataStore = DataStore(baseDirectoryOverride: testDir)
     }
 
     override func tearDown() {

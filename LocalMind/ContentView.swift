@@ -13,7 +13,8 @@ import AppKit
 struct ContentView: View {
     let aiManager: AIServiceManager
     let dataStore: DataStore
-    
+    let profileStore: ProfileStore
+
     @State private var selectedSelection: SidebarSelection = .chat
     @State private var selectedConversationID: UUID?
     
@@ -47,6 +48,7 @@ struct ContentView: View {
                 isCompact: isSidebarCompact,
                 dataStore: dataStore,
                 aiManager: aiManager,
+                profileStore: profileStore,
                 onNewConversation: startNewConversation
             )
             .frame(width: CGFloat(liveSidebarWidth))
@@ -133,61 +135,68 @@ struct ContentView: View {
 
     @ViewBuilder
     private var detailView: some View {
-        if let id = selectedConversationID,
-           dataStore.conversations.contains(where: { $0.id == id }) {
+        if let id = selectedConversationID {
+            // A SINGLE ChatView branch, keyed by the conversation id. This is
+            // deliberate: when the first message of a brand-new chat lands, the
+            // conversation moves from `draftConversation` (in-memory) into
+            // `dataStore`. If we branched the view on "is it in dataStore yet?",
+            // SwiftUI would swap _ConditionalContent cases and tear down /
+            // recreate ChatView — killing the in-flight streaming Task and its
+            // `isStreaming` state, so the typing indicator never shows on the
+            // first reply. One stable branch keeps the view (and its stream)
+            // alive across that draft→persisted transition.
             ChatView(
                 aiManager: aiManager,
                 dataStore: dataStore,
-                conversation: Binding(
-                    get: { dataStore.conversations.first(where: { $0.id == id }) ?? Conversation() },
-                    set: { dataStore.saveConversation($0) }
-                )
+                conversation: bindingForConversation(id)
             )
             .id(id)
-        } else if let draft = draftConversation, draft.id == selectedConversationID {
-            // Empty draft — held in @State so it doesn't pollute the sidebar.
-            // The setter persists the moment the conversation gains any messages.
-            ChatView(
-                aiManager: aiManager,
-                dataStore: dataStore,
-                conversation: Binding(
-                    get: { draftConversation ?? draft },
-                    set: { updated in
-                        if updated.messages.isEmpty {
-                            draftConversation = updated
-                        } else {
-                            dataStore.saveConversation(updated)
-                            draftConversation = nil
-                        }
-                    }
-                )
-            )
-            .id(draft.id)
         } else {
-            let initialConversation: Conversation = {
-                switch selectedSelection {
-                case .chat:
-                    return Conversation(toolType: .chat)
-                case .customTool(let id):
-                    return Conversation(toolType: .chat, customToolID: id)
+            // No selection — auto-start a draft so the chat input is never
+            // wired to a `.constant` binding (which would silently drop
+            // sendMessage's writes and lose the user's first message).
+            // Defer the state mutation to the next runloop tick so SwiftUI
+            // doesn't trip the "Modifying state during view update" trap
+            // if onAppear happens to fire during the same frame as the
+            // parent's render.
+            Color.clear
+                .onAppear {
+                    DispatchQueue.main.async { startNewConversation() }
                 }
-            }()
-
-            ChatView(
-                aiManager: aiManager,
-                dataStore: dataStore,
-                conversation: .constant(initialConversation)
-            )
-            .onAppear {
-                draftConversation = initialConversation
-                selectedConversationID = initialConversation.id
-            }
         }
     }
-    
-    /// Creates the conversation in-memory only. It's persisted by the binding
-    /// setter on ChatView the moment the first message lands, so the sidebar
-    /// stays clean of empty drafts until the user actually engages.
+
+    /// Builds the conversation binding for `id`, reading from dataStore first
+    /// and falling back to the in-memory draft. The setter keeps the draft in
+    /// sync (so writes within a single sendMessage call always see the latest
+    /// state) and persists to dataStore once the conversation has any messages
+    /// — which is also what keeps empty drafts out of the sidebar.
+    private func bindingForConversation(_ id: UUID) -> Binding<Conversation> {
+        Binding(
+            get: {
+                if let stored = dataStore.conversations.first(where: { $0.id == id }) {
+                    return stored
+                }
+                if let draft = draftConversation, draft.id == id {
+                    return draft
+                }
+                return Conversation()
+            },
+            set: { updated in
+                if draftConversation?.id == updated.id {
+                    draftConversation = updated
+                }
+                if !updated.messages.isEmpty
+                    || dataStore.conversations.contains(where: { $0.id == updated.id }) {
+                    dataStore.saveConversation(updated)
+                }
+            }
+        )
+    }
+
+    /// Creates a draft conversation in @State and selects it. The draft is
+    /// persisted to dataStore by the binding setter the moment the user sends
+    /// the first message, so empty drafts never pollute the sidebar.
     private func startNewConversation() {
         let newConversation: Conversation
         switch selectedSelection {
@@ -196,6 +205,7 @@ struct ContentView: View {
         case .customTool(let id):
             newConversation = Conversation(toolType: .chat, customToolID: id)
         }
+        draftConversation = newConversation
         selectedConversationID = newConversation.id
     }
     

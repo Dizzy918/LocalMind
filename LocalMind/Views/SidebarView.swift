@@ -21,15 +21,17 @@ struct SidebarView: View {
     
     let dataStore: DataStore
     let aiManager: AIServiceManager
+    let profileStore: ProfileStore
     let onNewConversation: () -> Void
-    
+
     @Environment(\.openSettings) private var openSettingsAction
-    
+
     @AppStorage("isDarkMode") private var isDarkMode: Bool = true
     @State private var searchQuery = ""
     @State private var isSearching = false
     @FocusState private var isSearchFocused: Bool
     @State private var mergeSource: Conversation?
+    @State private var showingProfileMenu = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -183,13 +185,17 @@ struct SidebarView: View {
                                 .font(AppTheme.Typography.caption)
                                 .foregroundStyle(AppTheme.Colors.textPrimary)
                                 .focused($isSearchFocused)
+                                // Escape exits the search field. `.onKeyPress`
+                                // (macOS 14+) consumes the event so the system
+                                // beep doesn't fire.
+                                .onKeyPress(.escape) {
+                                    exitSearch()
+                                    return .handled
+                                }
                         }
 
                         Button {
-                            withAnimation(AppTheme.Animations.quick) {
-                                searchQuery = ""
-                                isSearching = false
-                            }
+                            exitSearch()
                         } label: {
                             Image(systemName: "xmark")
                                 .font(.system(size: 10, weight: .semibold))
@@ -326,12 +332,12 @@ struct SidebarView: View {
         Group {
             if isCompact {
                 VStack(spacing: AppTheme.Spacing.lg) {
-                    StatusBadge(
-                        backend: aiManager.currentBackend,
-                        statusMessage: aiManager.statusMessage,
-                        isCompact: true
-                    )
-                    
+                    // Profile + settings grouped at the top of the vertical
+                    // footer (the "bottom-left" cluster in compact form).
+                    profileButton(size: 22)
+
+                    settingsButton(size: 14)
+
                     HoverIconButton(
                         systemName: isDarkMode ? "moon.fill" : "sun.max.fill",
                         size: 14,
@@ -341,58 +347,22 @@ struct SidebarView: View {
                     ) {
                         isDarkMode.toggle()
                     }
-                    
-                    settingsButton(size: 14)
+
+                    StatusBadge(
+                        backend: aiManager.currentBackend,
+                        statusMessage: aiManager.statusMessage,
+                        modelName: activeModelName,
+                        isCompact: true
+                    )
                 }
                 .padding(.vertical, AppTheme.Spacing.md)
             } else {
                 HStack(spacing: AppTheme.Spacing.sm) {
-                    StatusBadge(
-                        backend: aiManager.currentBackend,
-                        statusMessage: aiManager.statusMessage,
-                        isCompact: false
-                    )
-                    
-                    // Model Changer for Ollama
-                    if aiManager.currentBackend == .ollama && !aiManager.availableModels.isEmpty {
-                        Picker("", selection: Binding(
-                            get: { aiManager.selectedOllamaModel },
-                            set: { newValue in
-                                aiManager.selectedOllamaModel = newValue
-                                Task { await aiManager.detectAndConnect() }
-                            }
-                        )) {
-                            ForEach(aiManager.availableModels, id: \.name) { model in
-                                Text(model.name).tag(model.name)
-                            }
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                        .controlSize(.small)
-                        .frame(maxWidth: 120)
-                    }
-                    
-                    // Model Changer for OpenAI-compatible
-                    if aiManager.currentBackend == .openAICompatible && !aiManager.availableOpenAIModels.isEmpty {
-                        Picker("", selection: Binding(
-                            get: { aiManager.selectedOpenAIModel },
-                            set: { newValue in
-                                aiManager.selectedOpenAIModel = newValue
-                                Task { await aiManager.detectAndConnect() }
-                            }
-                        )) {
-                            ForEach(aiManager.availableOpenAIModels) { model in
-                                Text(model.id).tag(model.id)
-                            }
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                        .controlSize(.small)
-                        .frame(maxWidth: 120)
-                    }
-                    
-                    Spacer()
-                    
+                    // Left cluster: profile + settings + theme toggle.
+                    profileButton(size: 20)
+
+                    settingsButton(size: 12)
+
                     HoverIconButton(
                         systemName: isDarkMode ? "moon.fill" : "sun.max.fill",
                         size: 12,
@@ -402,14 +372,84 @@ struct SidebarView: View {
                     ) {
                         isDarkMode.toggle()
                     }
-                    
-                    settingsButton(size: 12)
+
+                    Spacer()
+
+                    // Right cluster: model selector + connection status.
+                    modelSelector
+
+                    StatusBadge(
+                        backend: aiManager.currentBackend,
+                        statusMessage: aiManager.statusMessage,
+                        modelName: activeModelName,
+                        isCompact: false
+                    )
                 }
                 .padding(AppTheme.Spacing.md)
             }
         }
     }
     
+    /// The model name the active backend is currently using, if any — surfaced
+    /// in the connection-status popover.
+    private var activeModelName: String? {
+        switch aiManager.currentBackend {
+        case .ollama: return aiManager.selectedOllamaModel
+        case .openAICompatible: return aiManager.selectedOpenAIModel
+        case .appleFoundationModels, .none: return nil
+        }
+    }
+
+    /// Inline model picker for the active backend. Hidden when the backend
+    /// exposes no selectable models (e.g. Apple Foundation Models, or before
+    /// a connection is established).
+    @ViewBuilder
+    private var modelSelector: some View {
+        if aiManager.currentBackend == .ollama && !aiManager.availableModels.isEmpty {
+            Picker("", selection: Binding(
+                get: { aiManager.selectedOllamaModel },
+                set: { newValue in
+                    aiManager.selectedOllamaModel = newValue
+                    Task { await aiManager.detectAndConnect() }
+                }
+            )) {
+                ForEach(aiManager.availableModels, id: \.name) { model in
+                    Text(model.name).tag(model.name)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .controlSize(.small)
+            .frame(maxWidth: 120)
+        } else if aiManager.currentBackend == .openAICompatible && !aiManager.availableOpenAIModels.isEmpty {
+            Picker("", selection: Binding(
+                get: { aiManager.selectedOpenAIModel },
+                set: { newValue in
+                    aiManager.selectedOpenAIModel = newValue
+                    Task { await aiManager.detectAndConnect() }
+                }
+            )) {
+                ForEach(aiManager.availableOpenAIModels) { model in
+                    Text(model.id).tag(model.id)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .controlSize(.small)
+            .frame(maxWidth: 120)
+        }
+    }
+
+    /// Collapses the search bar back to the "RECENT" header. Used by both
+    /// the X button and the Escape key while the search field is focused.
+    private func exitSearch() {
+        withAnimation(AppTheme.Animations.quick) {
+            searchQuery = ""
+            isSearching = false
+        }
+        isSearchFocused = false
+    }
+
     /// Opens the macOS Settings window
     private func openSettings() {
         if #available(macOS 13.0, *) {
@@ -424,6 +464,95 @@ struct SidebarView: View {
         #endif
     }
     
+    /// Small avatar pip in the status footer. Tapping it opens a popover with
+    /// the active profile's identity, a shortcut into Profile settings, and
+    /// Sign Out. Falls back to a generic icon when no profile is signed in
+    /// (shouldn't happen here since we gate the whole app on sign-in, but
+    /// keeps the view defensible).
+    private func profileButton(size: CGFloat) -> some View {
+        Button {
+            showingProfileMenu.toggle()
+        } label: {
+            Group {
+                if let profile = profileStore.currentProfile {
+                    AvatarCircle(initials: profile.initials, size: size, imageData: profile.avatarImageData)
+                } else {
+                    Image(systemName: "person.crop.circle")
+                        .font(.system(size: size * 0.9))
+                        .foregroundStyle(AppTheme.Colors.textTertiary)
+                }
+            }
+            .help(profileStore.currentProfile?.displayName ?? "Profile")
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $showingProfileMenu, arrowEdge: .top) {
+            profileMenu
+        }
+    }
+
+    @ViewBuilder
+    private var profileMenu: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+            if let profile = profileStore.currentProfile {
+                HStack(spacing: AppTheme.Spacing.md) {
+                    AvatarCircle(initials: profile.initials, size: 40, imageData: profile.avatarImageData)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(profile.displayName)
+                            .font(.headline)
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
+                        if !profile.email.isEmpty {
+                            Text(profile.email)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Text(signInMethodLabel(profile.signInMethod))
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+
+                Divider()
+
+                Button {
+                    showingProfileMenu = false
+                    // Deep-link to Profile tab: SettingsView reads this
+                    // once on appear and clears it. See SettingsView.deepLinkTabKey.
+                    UserDefaults.standard.set(SettingsView.SettingsTab.profile.rawValue,
+                                              forKey: SettingsView.deepLinkTabKey)
+                    openSettings()
+                } label: {
+                    Label("Manage Profile…", systemImage: "person.crop.circle.badge.plus")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+
+                Button(role: .destructive) {
+                    showingProfileMenu = false
+                    profileStore.signOut()
+                } label: {
+                    Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
+                        .foregroundStyle(AppTheme.Colors.statusOffline)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+            } else {
+                Text("Not signed in")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(AppTheme.Spacing.lg)
+        .frame(width: 260)
+    }
+
+    private func signInMethodLabel(_ method: SignInMethod) -> String {
+        switch method {
+        case .apple:  return "Signed in with Apple"
+        case .google: return "Signed in with Google (local)"
+        case .email:  return "Signed in with Email"
+        case .guest:  return "Guest profile"
+        }
+    }
+
     @ViewBuilder
     private func settingsButton(size: CGFloat) -> some View {
         if #available(macOS 14.0, *) {

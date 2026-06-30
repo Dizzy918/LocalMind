@@ -46,6 +46,7 @@ struct Conversation: Identifiable, Codable, Sendable {
     var isPinned: Bool           // Pinned conversations float to the top of the sidebar
     var isArchived: Bool         // Archived conversations are hidden by default
     var systemPromptOverride: String?  // Per-conversation prompt; nil falls back to the global default
+    var profileID: UUID?               // Owning profile. nil = orphan (pre-profiles legacy data).
     let createdAt: Date
     var updatedAt: Date
 
@@ -60,6 +61,7 @@ struct Conversation: Identifiable, Codable, Sendable {
         isPinned: Bool = false,
         isArchived: Bool = false,
         systemPromptOverride: String? = nil,
+        profileID: UUID? = nil,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -72,14 +74,15 @@ struct Conversation: Identifiable, Codable, Sendable {
         self.isPinned = isPinned
         self.isArchived = isArchived
         self.systemPromptOverride = systemPromptOverride
+        self.profileID = profileID
         self.createdAt = createdAt
         self.updatedAt = createdAt
     }
 
-    // Backward-compatible decoding — old files won't have isPinned/isArchived.
+    // Backward-compatible decoding — old files won't have isPinned/isArchived/profileID.
     enum CodingKeys: String, CodingKey {
         case id, title, messages, toolType, customToolID, customIconName, emoji
-        case isPinned, isArchived, systemPromptOverride, createdAt, updatedAt
+        case isPinned, isArchived, systemPromptOverride, profileID, createdAt, updatedAt
     }
 
     init(from decoder: Decoder) throws {
@@ -94,6 +97,7 @@ struct Conversation: Identifiable, Codable, Sendable {
         self.isPinned = try c.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
         self.isArchived = try c.decodeIfPresent(Bool.self, forKey: .isArchived) ?? false
         self.systemPromptOverride = try c.decodeIfPresent(String.self, forKey: .systemPromptOverride)
+        self.profileID = try c.decodeIfPresent(UUID.self, forKey: .profileID)
         self.createdAt = try c.decode(Date.self, forKey: .createdAt)
         self.updatedAt = try c.decode(Date.self, forKey: .updatedAt)
     }
@@ -110,6 +114,7 @@ struct Conversation: Identifiable, Codable, Sendable {
         try c.encode(isPinned, forKey: .isPinned)
         try c.encode(isArchived, forKey: .isArchived)
         try c.encodeIfPresent(systemPromptOverride, forKey: .systemPromptOverride)
+        try c.encodeIfPresent(profileID, forKey: .profileID)
         try c.encode(createdAt, forKey: .createdAt)
         try c.encode(updatedAt, forKey: .updatedAt)
     }

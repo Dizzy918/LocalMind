@@ -21,6 +21,35 @@ actor MCPClient: Sendable {
     private let decoder = JSONDecoder()
     private let encoder = JSONEncoder()
 
+    // HTTP transport state (Streamable HTTP per MCP spec).
+    private var httpURL: URL?
+    private var httpExtraHeaders: [String: String] = [:]
+    private var httpSessionID: String?
+    private nonisolated let httpSession: URLSession = {
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.timeoutIntervalForRequest = 60
+        cfg.timeoutIntervalForResource = 300
+        return URLSession(configuration: cfg)
+    }()
+    private var httpInFlight: [Task<Void, Never>] = []
+
+    /// Bounded ring buffer of recent stderr lines from the spawned MCP
+    /// server, plus any transport-level diagnostics we want surfaced in
+    /// the UI. Capped so a chatty server can't grow without bound.
+    private var logLines: [MCPLogLine] = []
+    private static let maxLogLines = 500
+
+    /// Callback fired when a *previously-connected* client transitions to
+    /// .failed on its own (process died, HTTP stream dropped, etc.). Used
+    /// by MCPService to drive reconnect-with-backoff. Not called for
+    /// failures inside the initial `connect()` call — those are surfaced
+    /// via the throw.
+    private var onUnexpectedFailure: (@Sendable (String) -> Void)?
+
+    func setOnUnexpectedFailure(_ handler: @escaping @Sendable (String) -> Void) {
+        self.onUnexpectedFailure = handler
+    }
+
     init(config: MCPServerConfig) {
         self.config = config
         self.transport = config.transport
@@ -83,6 +112,13 @@ actor MCPClient: Sendable {
         }
         stdinPipe = nil
         stdoutPipe = nil
+
+        // Cancel any in-flight HTTP POSTs and drop session state so a later
+        // reconnect starts fresh.
+        for task in httpInFlight { task.cancel() }
+        httpInFlight.removeAll()
+        httpSessionID = nil
+
         state = .disconnected
     }
 
@@ -124,18 +160,15 @@ actor MCPClient: Sendable {
         process.executableURL = URL(fileURLWithPath: resolved)
         process.arguments = args
 
-        // Always carry through the user's PATH so npx can locate node, etc.
+        // Carry through the user's PATH (discovered from a login shell so
+        // version managers like nvm/fnm/volta/mise resolve) so the launched
+        // process can find node, python, etc. when shelling out further.
         var mergedEnv = ProcessInfo.processInfo.environment
+        let userPath = Self.userShellPath().joined(separator: ":")
+        let existingPath = mergedEnv["PATH"] ?? ""
+        mergedEnv["PATH"] = existingPath.isEmpty ? userPath : "\(userPath):\(existingPath)"
         if let env = env {
             mergedEnv = mergedEnv.merging(env) { _, new in new }
-        }
-        // Common Homebrew prefixes that GUI apps don't get by default.
-        let extraPaths = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
-        let currentPath = mergedEnv["PATH"] ?? ""
-        let pathParts = currentPath.split(separator: ":").map(String.init)
-        let missingPaths = extraPaths.filter { !pathParts.contains($0) }
-        if !missingPaths.isEmpty {
-            mergedEnv["PATH"] = (missingPaths + pathParts).joined(separator: ":")
         }
         process.environment = mergedEnv
 
@@ -151,16 +184,31 @@ actor MCPClient: Sendable {
         self.stdinPipe = stdinPipe
         self.stdoutPipe = stdoutPipe
 
+        // If the child dies (bad package, missing binary, crash), fail any
+        // in-flight requests immediately so connect() returns instead of
+        // hanging forever in the initialize handshake.
+        process.terminationHandler = { [weak self] proc in
+            let code = proc.terminationStatus
+            Task { await self?.handleProcessTermination(exitCode: code) }
+        }
+
         do {
             try process.run()
         } catch {
-            throw MCPError.transportError("Failed to launch '\(resolved)': \(error.localizedDescription)")
+            // Drain whatever stderr produced before the exec failed so the
+            // user sees the real error rather than a generic NSError.
+            let stderrData = try? stderrPipe.fileHandleForReading.readToEnd()
+            let stderrMsg = stderrData.flatMap { String(data: $0, encoding: .utf8) }?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let detail = stderrMsg.isEmpty ? error.localizedDescription : stderrMsg
+            throw MCPError.transportError("Failed to launch '\(resolved)': \(detail)")
         }
 
         startReadingStdout(stdoutPipe)
+        startReadingStderr(stderrPipe)
     }
 
-    /// Locates an executable by name on common macOS install paths.
+    /// Locates an executable by name using the user's real shell PATH.
     /// Returns the input unchanged if it's already an absolute path.
     static func resolveExecutable(_ command: String) throws -> String {
         if command.hasPrefix("/") {
@@ -169,20 +217,104 @@ actor MCPClient: Sendable {
             }
             return command
         }
-        let searchPaths = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
+        let searchPaths = userShellPath()
         for dir in searchPaths {
             let candidate = "\(dir)/\(command)"
             if FileManager.default.isExecutableFile(atPath: candidate) {
                 return candidate
             }
         }
-        throw MCPError.transportError("Could not find '\(command)' in \(searchPaths.joined(separator: ", ")). Install it or use the absolute path.")
+        throw MCPError.transportError("Could not find '\(command)' on PATH. Install it (e.g. `brew install node` for npx) or specify an absolute path.")
     }
 
+    /// PATH from the user's login shell, cached. GUI apps launched from
+    /// Finder/launchd get a stripped PATH that omits Homebrew, nvm, fnm,
+    /// volta, mise, asdf etc. Spawning a login shell once at startup is
+    /// the same trick Electron's `fix-path` and VSCode use.
+    private static let _cachedShellPath: [String] = computeUserShellPath()
+
+    static func userShellPath() -> [String] { _cachedShellPath }
+
+    private static func computeUserShellPath() -> [String] {
+        let fallback = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
+        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        guard FileManager.default.isExecutableFile(atPath: shell) else { return fallback }
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: shell)
+        // -i forces interactive so .zshrc/.bashrc run; -l adds login shell
+        // so .zprofile/.bash_profile run too. Both are needed because version
+        // managers split their PATH exports across these files differently.
+        proc.arguments = ["-ilc", "echo $PATH"]
+        let out = Pipe()
+        proc.standardOutput = out
+        proc.standardError = Pipe()
+        proc.standardInput = FileHandle.nullDevice
+
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+        } catch {
+            return fallback
+        }
+
+        let data = (try? out.fileHandleForReading.readToEnd()) ?? Data()
+        let output = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let discovered = output.split(separator: ":").map(String.init).filter { !$0.isEmpty }
+
+        // Union: shell-discovered first, then the common fallbacks for anything missing.
+        var seen = Set<String>()
+        var result: [String] = []
+        for dir in discovered + fallback where seen.insert(dir).inserted {
+            result.append(dir)
+        }
+        return result.isEmpty ? fallback : result
+    }
+
+    private func startReadingStderr(_ pipe: Pipe) {
+        // Capture server stderr into the per-client ring buffer so the UI
+        // can show it on demand. Also mirrors to Xcode console for the
+        // developer-debug case.
+        Task.detached(priority: .utility) { [weak self] in
+            let handle = pipe.fileHandleForReading
+            do {
+                for try await line in handle.bytes.lines {
+                    if Task.isCancelled { break }
+                    await self?.appendLog(.init(timestamp: Date(), source: .stderr, text: line))
+                    let serverName = await self?.config.name ?? "?"
+                    print("[MCP \(serverName) stderr] \(line)")
+                }
+            } catch {
+                // Pipe closed when the process exits — expected.
+            }
+        }
+    }
+
+    /// Append a line to the bounded log buffer, dropping the oldest if
+    /// we've hit the cap.
+    private func appendLog(_ line: MCPLogLine) {
+        logLines.append(line)
+        if logLines.count > Self.maxLogLines {
+            logLines.removeFirst(logLines.count - Self.maxLogLines)
+        }
+    }
+
+    /// Snapshot of the recent log lines for UI display.
+    func recentLogs() -> [MCPLogLine] { logLines }
+
+    /// Wipe the log buffer (UI "Clear" action).
+    func clearLogs() { logLines.removeAll() }
+
     private func connectHTTP(url: String, headers: [String: String]?) async throws {
-        // HTTP/SSE transport implementation would go here
-        // For now, throw not implemented
-        throw MCPError.notImplemented("HTTP transport not yet implemented")
+        guard let parsed = URL(string: url) else {
+            throw MCPError.transportError("Invalid HTTP URL: \(url)")
+        }
+        httpURL = parsed
+        httpExtraHeaders = headers ?? [:]
+        httpSessionID = nil
+        // No socket to open — the initialize handshake driven by connect()
+        // will perform the first POST and surface any reachability errors.
     }
 
     private func startReadingStdout(_ pipe: Pipe) {
@@ -221,6 +353,27 @@ actor MCPClient: Sendable {
         }
     }
 
+    /// Called when the spawned MCP server process exits. Fails any pending
+    /// JSON-RPC requests so callers like connect() unblock instead of
+    /// waiting forever on a process that's no longer there.
+    private func handleProcessTermination(exitCode: Int32) async {
+        let pending = pendingRequests
+        pendingRequests.removeAll()
+        let msg = "Server process exited (status \(exitCode)) before responding. Check the package name and that the command is correct."
+        appendLog(.init(timestamp: Date(), source: .transport, text: msg))
+        let err = MCPError.transportError(msg)
+        for (_, cont) in pending {
+            cont.resume(throwing: err)
+        }
+        readerTask?.cancel()
+        readerTask = nil
+        if case .connected = state {
+            let failureMsg = "Server process exited unexpectedly (status \(exitCode))."
+            state = .failed(failureMsg)
+            onUnexpectedFailure?(failureMsg)
+        }
+    }
+
     private func handleNotification(_ notification: JSONRPCNotification) async {
         // Handle server notifications (e.g., tools/list_changed)
         print("MCPClient: Received notification: \(notification.method)")
@@ -239,12 +392,31 @@ actor MCPClient: Sendable {
             "clientInfo": AnyCodable(["name": request.clientInfo.name, "version": request.clientInfo.version])
         ]
 
-        let response = try await sendRequest(method: "initialize", params: params)
+        // 20s is generous for npx cold-cache installs; anything longer is
+        // almost certainly a dead handshake (wrong package, server crashed
+        // silently after stdio open, etc.). We'd rather surface an error
+        // than leave the UI stuck on "Connecting…" indefinitely.
+        let response = try await withTimeout(seconds: 20) {
+            try await self.sendRequest(method: "initialize", params: params)
+        }
         guard let result = response.result else {
             throw MCPError.serverError("Empty initialize response")
         }
         let data = try encoder.encode(result)
         return try decoder.decode(MCPInitializeResponse.self, from: data)
+    }
+
+    private func withTimeout<T: Sendable>(seconds: Double, _ op: @escaping @Sendable () async throws -> T) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await op() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw MCPError.transportError("Timed out after \(Int(seconds))s waiting for server. The package may not exist on npm, or the server crashed during startup.")
+            }
+            let result = try await group.next()!
+            group.cancelAll()
+            return result
+        }
     }
 
     private func sendRequest(method: String, params: [String: AnyCodable]?) async throws -> JSONRPCResponse {
@@ -272,9 +444,81 @@ actor MCPClient: Sendable {
         case .stdio:
             try stdinPipe?.fileHandleForWriting.write(contentsOf: data)
         case .http:
-            // HTTP transport would use URLSession here
-            throw MCPError.notImplemented("HTTP transport not yet implemented")
+            // Fire the POST as a child task so the caller (sendRequest)
+            // returns immediately and waits on its pendingRequests
+            // continuation, matching the stdio model.
+            let task = Task { await self.performHTTPPost(body: data) }
+            httpInFlight.append(task)
         }
+    }
+
+    /// Posts a single JSON-RPC frame and routes the response back through
+    /// `handleIncomingLine` so the rest of the client doesn't need to know
+    /// which transport it's running on. Supports both plain JSON responses
+    /// and SSE streams (which a Streamable-HTTP server can return when it
+    /// wants to push multiple events for a single request).
+    private func performHTTPPost(body: Data) async {
+        guard let url = httpURL else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
+        for (k, v) in httpExtraHeaders { req.setValue(v, forHTTPHeaderField: k) }
+        if let sid = httpSessionID { req.setValue(sid, forHTTPHeaderField: "Mcp-Session-Id") }
+        req.httpBody = body
+
+        do {
+            let (bytes, response) = try await httpSession.bytes(for: req)
+            guard let http = response as? HTTPURLResponse else { return }
+
+            if let sid = http.value(forHTTPHeaderField: "Mcp-Session-Id") {
+                httpSessionID = sid
+            }
+
+            // 202 Accepted = notification, no body to read.
+            if http.statusCode == 202 { return }
+            if !(200...299).contains(http.statusCode) {
+                let err = MCPError.transportError("HTTP \(http.statusCode) from server")
+                failAllPending(with: err)
+                return
+            }
+
+            let contentType = (http.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
+            if contentType.contains("text/event-stream") {
+                // SSE: each event is `data: <json>\n\n` (multi-line data is
+                // joined with a newline per the spec). We only care about
+                // `data:` lines containing JSON-RPC frames.
+                var dataBuffer = ""
+                for try await line in bytes.lines {
+                    if line.hasPrefix("data:") {
+                        let chunk = String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+                        if dataBuffer.isEmpty { dataBuffer = chunk }
+                        else { dataBuffer += "\n" + chunk }
+                    } else if line.isEmpty {
+                        if !dataBuffer.isEmpty {
+                            await handleIncomingLine(dataBuffer)
+                            dataBuffer = ""
+                        }
+                    }
+                }
+                if !dataBuffer.isEmpty { await handleIncomingLine(dataBuffer) }
+            } else {
+                // Plain JSON response — collect the whole body and dispatch.
+                var collected = Data()
+                for try await byte in bytes { collected.append(byte) }
+                if let line = String(data: collected, encoding: .utf8) {
+                    await handleIncomingLine(line)
+                }
+            }
+        } catch {
+            failAllPending(with: MCPError.transportError("HTTP request failed: \(error.localizedDescription)"))
+        }
+    }
+
+    private func failAllPending(with error: Error) {
+        let pending = pendingRequests
+        pendingRequests.removeAll()
+        for (_, cont) in pending { cont.resume(throwing: error) }
     }
 }
 

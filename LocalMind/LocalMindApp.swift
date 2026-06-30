@@ -11,6 +11,7 @@ import SwiftUI
 struct LocalMindApp: App {
     @State private var sharedAIManager = AIServiceManager()
     @State private var sharedDataStore = DataStore()
+    @State private var sharedProfileStore = ProfileStore()
     @State private var sharedMCPService: MCPService?
     @AppStorage("isDarkMode") private var isDarkMode: Bool = true
     @AppStorage("enableGlobalShortcut") private var enableGlobalShortcut: Bool = false
@@ -27,7 +28,17 @@ struct LocalMindApp: App {
         // WindowGroup so ⌘N opens a fresh window. The first window still
         // restores its position via SwiftUI's built-in scene restoration.
         WindowGroup("LocalMind", id: "main") {
-            ContentView(aiManager: sharedAIManager, dataStore: sharedDataStore)
+            Group {
+                if sharedProfileStore.isSignedIn {
+                    ContentView(
+                        aiManager: sharedAIManager,
+                        dataStore: sharedDataStore,
+                        profileStore: sharedProfileStore
+                    )
+                } else {
+                    SignInView(profileStore: sharedProfileStore)
+                }
+            }
                 .frame(minWidth: AppTheme.Dimensions.minWindowWidth, minHeight: AppTheme.Dimensions.minWindowHeight)
                 .background(AppTheme.Colors.backgroundPrimary)
                 .preferredColorScheme(isDarkMode ? .dark : .light)
@@ -37,6 +48,13 @@ struct LocalMindApp: App {
                     sharedMCPService = mcpService
                     sharedAIManager.setMCPService(mcpService)
                     BubbleWindowController.shared.setup(aiManager: sharedAIManager, dataStore: sharedDataStore)
+
+                    // Hand the data store a one-time migration hook so the
+                    // first profile adopts pre-existing (pre-profiles) chats.
+                    let dataStoreRef = sharedDataStore
+                    sharedProfileStore.onFirstProfileCreated = { firstProfileID in
+                        dataStoreRef.claimOrphanConversations(forProfile: firstProfileID)
+                    }
 
                     HotkeyManager.shared.onHotkeyPressed = {
                         BubbleWindowController.shared.toggle()
@@ -63,7 +81,12 @@ struct LocalMindApp: App {
         }
         
         Settings {
-            SettingsView(aiManager: sharedAIManager, dataStore: sharedDataStore, mcpService: sharedMCPService)
+            SettingsView(
+                aiManager: sharedAIManager,
+                dataStore: sharedDataStore,
+                mcpService: sharedMCPService,
+                profileStore: sharedProfileStore
+            )
                 .preferredColorScheme(isDarkMode ? .dark : .light)
         }
         
@@ -72,14 +95,33 @@ struct LocalMindApp: App {
             QuickActionPanel(aiManager: sharedAIManager, dataStore: sharedDataStore)
                 .preferredColorScheme(isDarkMode ? .dark : .light)
         } label: {
-            // .renderingMode(.original) opts out of the template invert so the
-            // icon stays white regardless of menu bar or system appearance.
-            Image(systemName: "brain.head.profile")
-                .renderingMode(.original)
-                .foregroundStyle(.white)
-                .help("LocalMind")
+            // We build a real NSImage (rather than `Image(systemName:)`) so we
+            // can flip `isTemplate = false`. Template images get inverted by
+            // the menu bar based on its current appearance — that's what was
+            // making the icon black on a light menu bar. With `isTemplate = false`
+            // and a baked-in white palette colour, macOS leaves the bitmap alone.
+            if let nsImage = LocalMindApp.whiteMenuBarIcon() {
+                Image(nsImage: nsImage)
+                    .help("LocalMind")
+            } else {
+                Image(systemName: "brain.head.profile")
+                    .help("LocalMind")
+            }
         }
         .menuBarExtraStyle(.window)
+    }
+
+    /// Builds an always-white "brain.head.profile" symbol for the menu bar.
+    /// Calling `.isTemplate = false` is the key step — without it, macOS
+    /// repaints the symbol based on menu-bar appearance, flipping to black
+    /// on light menu bars.
+    static func whiteMenuBarIcon() -> NSImage? {
+        let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [.white]))
+        let image = NSImage(systemSymbolName: "brain.head.profile", accessibilityDescription: "LocalMind")?
+            .withSymbolConfiguration(config)
+        image?.isTemplate = false
+        return image
     }
 
     /// Sync `NSApp.appearance` with the user's preference so the dynamic

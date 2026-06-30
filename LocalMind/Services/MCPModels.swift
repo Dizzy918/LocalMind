@@ -244,6 +244,17 @@ enum MCPTransport: Codable, Sendable, Hashable {
     }
 }
 
+// MARK: - Log Line
+
+struct MCPLogLine: Sendable, Hashable, Identifiable {
+    enum Source: String, Sendable { case stderr, transport }
+
+    let id = UUID()
+    let timestamp: Date
+    let source: Source
+    let text: String
+}
+
 // MARK: - Connection State
 
 enum MCPConnectionState: Sendable {

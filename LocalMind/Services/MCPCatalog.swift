@@ -59,16 +59,18 @@ enum MCPCatalog {
             iconSystemName: "arrow.triangle.branch",
             category: .dev,
             officialURL: "https://github.com/modelcontextprotocol/servers/tree/main/src/git",
+            // Upstream moved Git off npm and ships only via Python now —
+            // uvx (from astral.sh/uv) handles install-on-first-run.
             template: MCPServerConfig(
                 name: "Git",
                 transport: .stdio(
-                    command: "npx",
-                    args: ["-y", "@modelcontextprotocol/server-git"],
+                    command: "uvx",
+                    args: ["mcp-server-git"],
                     env: nil
                 ),
                 enabled: true
             ),
-            setupHint: nil
+            setupHint: "Requires `uv` (install with: brew install uv)."
         ),
         MCPCatalogEntry(
             id: "memory",
@@ -98,13 +100,13 @@ enum MCPCatalog {
             template: MCPServerConfig(
                 name: "Web Fetch",
                 transport: .stdio(
-                    command: "npx",
-                    args: ["-y", "@modelcontextprotocol/server-fetch"],
+                    command: "uvx",
+                    args: ["mcp-server-fetch"],
                     env: nil
                 ),
                 enabled: true
             ),
-            setupHint: nil
+            setupHint: "Requires `uv` (install with: brew install uv)."
         ),
         MCPCatalogEntry(
             id: "brave-search",
@@ -152,13 +154,13 @@ enum MCPCatalog {
             template: MCPServerConfig(
                 name: "SQLite",
                 transport: .stdio(
-                    command: "npx",
-                    args: ["-y", "@modelcontextprotocol/server-sqlite", "--db-path", FileManager.default.homeDirectoryForCurrentUser.path + "/Library/Application Support/LocalMind/notes.sqlite"],
+                    command: "uvx",
+                    args: ["mcp-server-sqlite", "--db-path", FileManager.default.homeDirectoryForCurrentUser.path + "/Library/Application Support/LocalMind/notes.sqlite"],
                     env: nil
                 ),
                 enabled: true
             ),
-            setupHint: "Edit the path argument to point at your database file."
+            setupHint: "Requires `uv` (install with: brew install uv). Edit the path argument to point at your database file."
         ),
         MCPCatalogEntry(
             id: "apple-notes",
