@@ -55,6 +55,10 @@ struct ChatView: View {
     // Conversation branches (versions saved on edit/regenerate)
     @State private var showingBranches = false
 
+    // Knowledge base ("chat with your documents")
+    @State private var showingKnowledgeBase = false
+    @AppStorage("useKnowledgeBase") private var useKnowledgeBase = false
+
     // One-time onboarding hint shown on the empty welcome screen.
     @AppStorage("hasSeenWelcomeHint") private var hasSeenWelcomeHint = false
 
@@ -209,6 +213,11 @@ struct ChatView: View {
         } message: { request in
             Text("\(request.serverName) wants to run “\(request.toolName)”.\n\n\(request.argumentsPreview)")
         }
+        .sheet(isPresented: $showingKnowledgeBase) {
+            KnowledgeBaseView(store: KnowledgeBaseStore.shared) {
+                showingKnowledgeBase = false
+            }
+        }
     }
 
     // MARK: - Chat Header
@@ -255,6 +264,17 @@ struct ChatView: View {
                     branchListPopover
                 }
             }
+
+            // Knowledge base — "chat with your documents". Filled when active.
+            Button {
+                showingKnowledgeBase = true
+            } label: {
+                Image(systemName: useKnowledgeBase ? "books.vertical.fill" : "books.vertical")
+                    .font(.system(size: 14))
+                    .foregroundStyle(useKnowledgeBase ? AppTheme.Colors.accentPrimary : AppTheme.Colors.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .help(useKnowledgeBase ? "Your documents are being used in chats" : "Chat with your documents")
 
             // Per-conversation model & generation parameters. "cpu" reads as
             // "which model / how it generates" for this chat specifically.
@@ -1001,7 +1021,29 @@ struct ChatView: View {
         isStreaming = true
         streamingContent = ""
 
-        let systemPrompt = resolvedSystemPrompt()
+        var systemPrompt = resolvedSystemPrompt()
+
+        // Retrieval-augmented generation: when the user has enabled their
+        // document store, pull the most relevant chunks for the latest question
+        // and prepend them so the model can ground its answer in those docs.
+        if useKnowledgeBase,
+           let lastUserMessage = conversation.messages.last(where: { $0.role == .user })?.content {
+            let hits = KnowledgeBaseStore.shared.search(lastUserMessage)
+            if !hits.isEmpty {
+                let excerpts = hits.enumerated()
+                    .map { "[\($0.offset + 1)] \($0.element.text)" }
+                    .joined(separator: "\n\n")
+                systemPrompt = """
+                The user has shared personal documents. Use the excerpts below to answer when they're relevant, and say so plainly if they don't contain the answer. Don't invent details they don't support.
+
+                <documents>
+                \(excerpts)
+                </documents>
+
+                \(systemPrompt)
+                """
+            }
+        }
 
         // Apply context limit
         let contextLimit = UserDefaults.standard.integer(forKey: "contextMessageLimit")
