@@ -43,6 +43,12 @@ struct ChatView: View {
     // System prompt editor
     @State private var showingSystemPromptEditor = false
 
+    // Per-conversation model & generation parameters
+    @State private var showingModelSettings = false
+    // Live slider value, committed to the conversation only on release so a
+    // drag doesn't trigger a disk write on every tick.
+    @State private var tempDraft: Double = AIParameters.default.temperature
+
     // One-time onboarding hint shown on the empty welcome screen.
     @AppStorage("hasSeenWelcomeHint") private var hasSeenWelcomeHint = false
 
@@ -190,6 +196,22 @@ struct ChatView: View {
 
             Spacer()
 
+            // Per-conversation model & generation parameters. "cpu" reads as
+            // "which model / how it generates" for this chat specifically.
+            Button {
+                showingModelSettings = true
+            } label: {
+                Image(systemName: "cpu")
+                    .font(.system(size: 14))
+                    .foregroundStyle(hasModelParamOverride ? AppTheme.Colors.accentPrimary : AppTheme.Colors.textTertiary)
+                    .symbolVariant(hasModelParamOverride ? .fill : .none)
+            }
+            .buttonStyle(.plain)
+            .help(hasModelParamOverride ? "Custom model / temperature set for this conversation" : "Set model & temperature for this conversation")
+            .popover(isPresented: $showingModelSettings, arrowEdge: .bottom) {
+                modelSettingsPopover
+            }
+
             // Per-conversation system-prompt override (left of export). Uses a
             // "tuning sliders" glyph so it reads as conversation behaviour /
             // custom instructions rather than a profile/account control.
@@ -267,7 +289,103 @@ struct ChatView: View {
         }
         return "\(tokens) tokens"
     }
-    
+
+    // MARK: - Per-conversation model & parameters
+
+    /// True when this conversation pins its own model or temperature.
+    private var hasModelParamOverride: Bool {
+        conversation.modelOverride != nil || conversation.temperatureOverride != nil
+    }
+
+    /// Label for the backend's globally-selected model — shown as the
+    /// "Default" option so the user knows what they fall back to.
+    private var globalModelLabel: String {
+        switch aiManager.currentBackend {
+        case .ollama: return aiManager.selectedOllamaModel
+        case .openAICompatible: return aiManager.selectedOpenAIModel
+        case .appleFoundationModels: return "Apple Intelligence"
+        case .none: return "—"
+        }
+    }
+
+    /// Pins a model and/or temperature for this conversation only. Both follow
+    /// the global settings until explicitly overridden; "Reset" clears them.
+    /// Mutating `conversation` persists automatically via its binding setter.
+    private var modelSettingsPopover: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Model & Parameters")
+                    .font(AppTheme.Typography.headline)
+                Text("Applies to this conversation only.")
+                    .font(AppTheme.Typography.captionSecondary)
+                    .foregroundStyle(.secondary)
+            }
+
+            if !aiManager.allAvailableModelIDs.isEmpty {
+                VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
+                    Text("MODEL")
+                        .font(AppTheme.Typography.captionSecondary)
+                        .foregroundStyle(AppTheme.Colors.textTertiary)
+                        .tracking(1.2)
+                    Picker("", selection: Binding(
+                        get: { conversation.modelOverride ?? "" },
+                        set: { conversation.modelOverride = $0.isEmpty ? nil : $0 }
+                    )) {
+                        Text("Default (\(globalModelLabel))").tag("")
+                        ForEach(aiManager.allAvailableModelIDs, id: \.self) { model in
+                            Text(model).tag(model)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                }
+            } else {
+                Text("The active backend (\(globalModelLabel)) doesn't expose selectable models.")
+                    .font(AppTheme.Typography.captionSecondary)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
+                HStack {
+                    Text("TEMPERATURE")
+                        .font(AppTheme.Typography.captionSecondary)
+                        .foregroundStyle(AppTheme.Colors.textTertiary)
+                        .tracking(1.2)
+                    Spacer()
+                    Text(String(format: "%.2f", tempDraft))
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(conversation.temperatureOverride != nil ? AppTheme.Colors.accentPrimary : AppTheme.Colors.textSecondary)
+                }
+                Slider(value: $tempDraft, in: 0...1, step: 0.05) { editing in
+                    if !editing { conversation.temperatureOverride = tempDraft }
+                }
+                Text("Lower = focused & deterministic · Higher = creative & varied")
+                    .font(AppTheme.Typography.captionSecondary)
+                    .foregroundStyle(AppTheme.Colors.textTertiary)
+            }
+
+            Divider()
+
+            HStack {
+                Button("Reset to defaults") {
+                    conversation.modelOverride = nil
+                    conversation.temperatureOverride = nil
+                    tempDraft = aiManager.aiParameters.temperature
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .disabled(!hasModelParamOverride)
+                Spacer()
+                Button("Done") { showingModelSettings = false }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(AppTheme.Spacing.lg)
+        .frame(width: 320)
+        .onAppear { tempDraft = conversation.temperatureOverride ?? aiManager.aiParameters.temperature }
+    }
+
     // MARK: - Messages Area
 
     private var messagesArea: some View {
@@ -726,7 +844,7 @@ struct ChatView: View {
         return nil
     }
     
-    private func generateResponse() async {
+    private func generateResponse(modelOverride oneShotModel: String? = nil) async {
         guard let service = aiManager.currentService else {
             let errorMsg = ChatMessage(role: .assistant, content: "⚠️ \(AIServiceError.noBackendAvailable.localizedDescription)\n\n💡 \(AIServiceError.noBackendAvailable.recoverySuggestion ?? "")")
             conversation.messages.append(errorMsg)
@@ -764,12 +882,21 @@ struct ChatView: View {
         let contextLimit = UserDefaults.standard.integer(forKey: "contextMessageLimit")
         let limit = contextLimit > 0 ? contextLimit : 10
         let recentMessages = Array(conversation.messages.suffix(limit))
-        
+
+        // Per-conversation overrides layer on top of the global settings. A
+        // one-shot model (used by "regenerate with another model") wins over
+        // the conversation's pinned model.
+        let effectiveModel = oneShotModel ?? conversation.modelOverride
+        var effectiveParameters = aiManager.aiParameters
+        if let temperature = conversation.temperatureOverride {
+            effectiveParameters.temperature = temperature
+        }
+
         do {
             let availableTools = aiManager.getAvailableTools()
             let tools = availableTools.isEmpty ? nil : availableTools
             var pendingToolCalls: [AIToolCall] = []
-            for try await chunk in service.streamChat(messages: recentMessages, systemPrompt: systemPrompt, modelOverride: nil, parameters: aiManager.aiParameters, tools: tools) {
+            for try await chunk in service.streamChat(messages: recentMessages, systemPrompt: systemPrompt, modelOverride: effectiveModel, parameters: effectiveParameters, tools: tools) {
                 if Task.isCancelled { break }
                 switch chunk {
                 case .text(let text):

@@ -131,6 +131,9 @@ struct ContentView: View {
             draftConversation = nil
             selectedConversationID = nil
         }
+        .onReceive(NotificationCenter.default.publisher(for: .newConversation)) { _ in
+            startNewConversation()
+        }
     }
     
     @State private var draftConversation: Conversation?
