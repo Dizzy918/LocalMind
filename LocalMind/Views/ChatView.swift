@@ -188,6 +188,24 @@ struct ChatView: View {
                 onClose: { comparison = nil }
             )
         }
+        // Tool-call approval gate. The MCP service publishes a pending request
+        // while a generation is blocked waiting on the user's decision.
+        .alert(
+            "Allow tool call?",
+            isPresented: Binding(
+                get: { aiManager.mcpService?.pendingApproval != nil },
+                // Dismissal is driven by the buttons (which clear the pending
+                // request); a no-op setter avoids resolving the continuation twice.
+                set: { _ in }
+            ),
+            presenting: aiManager.mcpService?.pendingApproval
+        ) { request in
+            Button("Allow once") { request.respond(.allowOnce) }
+            Button("Always allow this tool") { request.respond(.allowAlways) }
+            Button("Deny", role: .cancel) { request.respond(.deny) }
+        } message: { request in
+            Text("\(request.serverName) wants to run “\(request.toolName)”.\n\n\(request.argumentsPreview)")
+        }
     }
 
     // MARK: - Chat Header
