@@ -18,6 +18,7 @@ struct KnowledgeBaseView: View {
 
     @AppStorage("useKnowledgeBase") private var useKnowledgeBase = false
     @State private var importError: String?
+    @State private var isDropTargeted = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
@@ -39,6 +40,16 @@ struct KnowledgeBaseView: View {
         }
         .padding(AppTheme.Spacing.lg)
         .frame(width: 520, height: 480)
+        .overlay {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(AppTheme.Colors.accentPrimary, style: StrokeStyle(lineWidth: 2, dash: [6]))
+                    .padding(4)
+            }
+        }
+        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+            handleDrop(providers)
+        }
     }
 
     private var header: some View {
@@ -76,12 +87,12 @@ struct KnowledgeBaseView: View {
             Spacer()
 
             Button {
-                addDocument()
+                addDocuments()
             } label: {
                 if store.isIndexing {
                     HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Indexing…") }
                 } else {
-                    Label("Add document…", systemImage: "plus")
+                    Label("Add documents…", systemImage: "plus")
                 }
             }
             .disabled(store.isIndexing || !store.isAvailable)
@@ -142,32 +153,92 @@ struct KnowledgeBaseView: View {
         }
     }
 
-    private func addDocument() {
+    private func addDocuments() {
         #if os(macOS)
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.pdf, .plainText, .text]
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        panel.title = "Add a document to your knowledge base"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = true
+        panel.title = "Add documents to your knowledge base"
+        panel.message = "Pick files or a folder — subfolders are scanned for PDFs and text files."
+        guard panel.runModal() == .OK else { return }
+        importURLs(panel.urls)
+        #endif
+    }
 
+    /// Imports a mix of files and folders. Folders are scanned recursively; each
+    /// supported file is extracted and indexed, with a summary of any failures.
+    private func importURLs(_ urls: [URL]) {
         importError = nil
+        let files = Self.collectSupportedFiles(from: urls)
+        guard !files.isEmpty else {
+            importError = "No PDFs or text files found in that selection."
+            return
+        }
         Task {
-            guard let text = Self.extractText(from: url),
-                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                importError = "Couldn't read any text from \(url.lastPathComponent)."
-                return
+            var failures: [String] = []
+            var anyAdded = false
+            for url in files {
+                guard let text = Self.extractText(from: url),
+                      !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      await store.addDocument(name: url.lastPathComponent, text: text) > 0 else {
+                    failures.append(url.lastPathComponent)
+                    continue
+                }
+                anyAdded = true
             }
-            let indexed = await store.addDocument(name: url.lastPathComponent, text: text)
-            if indexed == 0 {
-                importError = "No indexable text found in \(url.lastPathComponent)."
+            if anyAdded { useKnowledgeBase = true }
+            if failures.isEmpty {
+                importError = nil
             } else {
-                // Turning on retrieval automatically the first time a document
-                // is added makes the feature actually do something.
-                useKnowledgeBase = true
+                let shown = failures.prefix(3).joined(separator: ", ")
+                importError = "Couldn't index \(failures.count) file\(failures.count == 1 ? "" : "s"): \(shown)\(failures.count > 3 ? "…" : "")"
             }
         }
-        #endif
+    }
+
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var collected: [URL] = []
+        for provider in providers {
+            group.enter()
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                var url: URL?
+                if let data = item as? Data { url = URL(dataRepresentation: data, relativeTo: nil) }
+                else if let direct = item as? URL { url = direct }
+                if let url { lock.lock(); collected.append(url); lock.unlock() }
+                group.leave()
+            }
+        }
+        group.notify(queue: .main) {
+            if !collected.isEmpty { importURLs(collected) }
+        }
+        return true
+    }
+
+    private static let supportedExtensions: Set<String> =
+        ["pdf", "txt", "md", "markdown", "text", "csv", "tsv", "json", "log", "rtf"]
+
+    /// Flattens a selection of files and folders into supported document URLs.
+    static func collectSupportedFiles(from urls: [URL]) -> [URL] {
+        let fm = FileManager.default
+        var result: [URL] = []
+        for url in urls {
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: url.path, isDirectory: &isDir) else { continue }
+            if isDir.boolValue {
+                if let enumerator = fm.enumerator(at: url, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
+                    for case let file as URL in enumerator
+                    where supportedExtensions.contains(file.pathExtension.lowercased()) {
+                        result.append(file)
+                    }
+                }
+            } else if supportedExtensions.contains(url.pathExtension.lowercased()) {
+                result.append(url)
+            }
+        }
+        return result
     }
 
     static func extractText(from url: URL) -> String? {
