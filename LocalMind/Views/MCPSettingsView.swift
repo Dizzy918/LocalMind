@@ -13,11 +13,15 @@ struct MCPSettingsView: View {
     @State private var showingCustomServer = false
     @State private var logsServerName: String?
     @State private var toolsServerName: String?
+    @State private var showingAuditLog = false
+    @AppStorage("mcpRequireApproval") private var requireApproval = true
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: AppTheme.Spacing.lg) {
                 header
+
+                approvalControls
 
                 if mcpService.allConfigs.isEmpty {
                     emptyState
@@ -62,6 +66,40 @@ struct MCPSettingsView: View {
                 toolsServerName = nil
             }
         }
+        .sheet(isPresented: $showingAuditLog) {
+            MCPAuditLogView(mcpService: mcpService) { showingAuditLog = false }
+        }
+    }
+
+    /// Tool-call safety: the approval switch plus an entry point to the
+    /// session's tool-call activity log.
+    private var approvalControls: some View {
+        HStack(spacing: AppTheme.Spacing.md) {
+            Image(systemName: "lock.shield")
+                .font(.system(size: 18))
+                .foregroundStyle(AppTheme.Colors.accentPrimary)
+            Toggle(isOn: $requireApproval) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Ask before running tools")
+                        .font(AppTheme.Typography.body)
+                    Text("Approve each tool call the AI tries to make on your machine.")
+                        .font(AppTheme.Typography.captionSecondary)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
+            Spacer()
+            Button {
+                showingAuditLog = true
+            } label: {
+                Label("Activity log", systemImage: "list.bullet.rectangle")
+            }
+        }
+        .padding(AppTheme.Spacing.md)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(AppTheme.Colors.backgroundSecondary)
+        )
     }
 
     private var header: some View {
@@ -667,5 +705,95 @@ struct MCPToolsSheet: View {
         }
         .padding(AppTheme.Spacing.xl)
         .frame(width: 580, height: 520)
+    }
+}
+
+// MARK: - Tool-call Activity Log
+
+/// Read-only audit trail of every tool call the AI attempted this session.
+struct MCPAuditLogView: View {
+    let mcpService: MCPService
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Tool Activity")
+                        .font(AppTheme.Typography.headline)
+                    Text("Every tool call the AI has made this session.")
+                        .font(AppTheme.Typography.captionSecondary)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Clear") { mcpService.clearAuditLog() }
+                    .disabled(mcpService.auditLog.isEmpty)
+                Button("Close", action: onClose)
+                    .keyboardShortcut(.cancelAction)
+            }
+
+            Divider()
+
+            if mcpService.auditLog.isEmpty {
+                VStack(spacing: AppTheme.Spacing.sm) {
+                    Image(systemName: "checklist")
+                        .font(.system(size: 30))
+                        .foregroundStyle(.secondary)
+                    Text("No tool calls yet.")
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 6) {
+                        ForEach(mcpService.auditLog.reversed()) { record in
+                            auditRow(record)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(AppTheme.Spacing.lg)
+        .frame(width: 560, height: 480)
+    }
+
+    private func auditRow(_ record: MCPToolCallRecord) -> some View {
+        HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
+            Image(systemName: record.status.systemImage)
+                .foregroundStyle(color(for: record.status))
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Text(record.toolName)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                    Text("· \(record.status.rawValue)")
+                        .font(AppTheme.Typography.captionSecondary)
+                        .foregroundStyle(color(for: record.status))
+                    Spacer()
+                    Text(record.timestamp.formatted(date: .omitted, time: .standard))
+                        .font(AppTheme.Typography.captionSecondary)
+                        .foregroundStyle(.tertiary)
+                }
+                Text(record.detail)
+                    .font(AppTheme.Typography.captionSecondary)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(AppTheme.Spacing.sm)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(AppTheme.Colors.backgroundSecondary.opacity(0.5))
+        )
+    }
+
+    private func color(for status: MCPToolCallRecord.Status) -> Color {
+        switch status {
+        case .allowed: return .green
+        case .denied:  return .orange
+        case .error:   return .red
+        }
     }
 }

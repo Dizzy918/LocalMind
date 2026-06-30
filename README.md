@@ -22,6 +22,11 @@ LocalMind connects to local AI backends running on your machine and provides a c
 - **Text-to-Speech** — read AI responses aloud
 - **Vision** — drag & drop or paste images for analysis (requires a vision model like LLaVA)
 - **File Attachments** — drop PDFs and text files directly into the chat
+- **Chat with Your Documents** — add PDFs/text files to an on-device knowledge base; relevant passages are retrieved and grounded into answers (local embeddings via Apple's NaturalLanguage — nothing is uploaded)
+- **Per-Conversation Model & Temperature** — pin a specific model or creativity level for one chat without changing your global default
+- **Compare Models Side-by-Side** — regenerate any answer with another model and keep the one you prefer
+- **Conversation Branches** — editing or regenerating saves the previous version so you can restore it
+- **Tool-Call Approval & Audit** — approve each MCP tool call before it runs and review a log of what the AI did
 - **Full-Text Search** — multi-word search across all conversation content, not just titles
 - **Custom Tools** — create reusable AI tools with custom system prompts
 - **Menu Bar App** — quick access from the menu bar without switching windows

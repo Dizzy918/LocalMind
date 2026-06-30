@@ -27,6 +27,7 @@ struct SidebarView: View {
     @Environment(\.openSettings) private var openSettingsAction
 
     @AppStorage("isDarkMode") private var isDarkMode: Bool = true
+    @AppStorage("enableGlobalShortcut") private var globalShortcutEnabled: Bool = false
     @State private var searchQuery = ""
     @State private var isSearching = false
     @FocusState private var isSearchFocused: Bool
@@ -582,7 +583,12 @@ struct SidebarView: View {
                 shortcutRow("⌘↩", "Send message")
                 shortcutRow("↑ ↓", "Cycle previous prompts")
                 shortcutRow("Esc", "Exit search")
-                shortcutRow("⌘V", "Paste an image")
+                shortcutRow("⌘V", "Paste an image or text")
+                // Only advertise the global hotkey when it's actually armed —
+                // otherwise the row would lie. Shows the user's real binding.
+                if globalShortcutEnabled {
+                    shortcutRow(HotkeyManager.shared.currentShortcutDescription(), "Toggle floating bubble")
+                }
             }
 
             Divider()
@@ -602,7 +608,7 @@ struct SidebarView: View {
             Text(keys)
                 .font(.system(.caption, design: .monospaced).weight(.semibold))
                 .foregroundStyle(AppTheme.Colors.textPrimary)
-                .frame(width: 48, alignment: .leading)
+                .frame(width: 60, alignment: .leading)
             Text(label)
                 .font(.caption)
                 .foregroundStyle(AppTheme.Colors.textSecondary)

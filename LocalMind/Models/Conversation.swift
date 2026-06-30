@@ -35,6 +35,23 @@ enum ToolType: String, Codable, Sendable, CaseIterable {
     }
 }
 
+/// A saved-off version of a conversation's message list, captured the moment
+/// the user forked it (by editing a message or regenerating). Lets them get
+/// back a path that would otherwise have been discarded.
+struct ConversationBranch: Identifiable, Codable, Sendable {
+    let id: UUID
+    let createdAt: Date
+    var label: String
+    var messages: [ChatMessage]
+
+    init(id: UUID = UUID(), createdAt: Date = Date(), label: String, messages: [ChatMessage]) {
+        self.id = id
+        self.createdAt = createdAt
+        self.label = label
+        self.messages = messages
+    }
+}
+
 struct Conversation: Identifiable, Codable, Sendable {
     let id: UUID
     var title: String
@@ -46,6 +63,9 @@ struct Conversation: Identifiable, Codable, Sendable {
     var isPinned: Bool           // Pinned conversations float to the top of the sidebar
     var isArchived: Bool         // Archived conversations are hidden by default
     var systemPromptOverride: String?  // Per-conversation prompt; nil falls back to the global default
+    var modelOverride: String?         // Per-conversation model id; nil = use the globally selected model
+    var temperatureOverride: Double?   // Per-conversation temperature; nil = use the global parameter
+    var branches: [ConversationBranch] = []  // Earlier versions, saved when the user edits/regenerates
     var profileID: UUID?               // Owning profile. nil = orphan (pre-profiles legacy data).
     let createdAt: Date
     var updatedAt: Date
@@ -61,6 +81,8 @@ struct Conversation: Identifiable, Codable, Sendable {
         isPinned: Bool = false,
         isArchived: Bool = false,
         systemPromptOverride: String? = nil,
+        modelOverride: String? = nil,
+        temperatureOverride: Double? = nil,
         profileID: UUID? = nil,
         createdAt: Date = Date()
     ) {
@@ -74,6 +96,8 @@ struct Conversation: Identifiable, Codable, Sendable {
         self.isPinned = isPinned
         self.isArchived = isArchived
         self.systemPromptOverride = systemPromptOverride
+        self.modelOverride = modelOverride
+        self.temperatureOverride = temperatureOverride
         self.profileID = profileID
         self.createdAt = createdAt
         self.updatedAt = createdAt
@@ -83,6 +107,7 @@ struct Conversation: Identifiable, Codable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id, title, messages, toolType, customToolID, customIconName, emoji
         case isPinned, isArchived, systemPromptOverride, profileID, createdAt, updatedAt
+        case modelOverride, temperatureOverride, branches
     }
 
     init(from decoder: Decoder) throws {
@@ -97,6 +122,9 @@ struct Conversation: Identifiable, Codable, Sendable {
         self.isPinned = try c.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
         self.isArchived = try c.decodeIfPresent(Bool.self, forKey: .isArchived) ?? false
         self.systemPromptOverride = try c.decodeIfPresent(String.self, forKey: .systemPromptOverride)
+        self.modelOverride = try c.decodeIfPresent(String.self, forKey: .modelOverride)
+        self.temperatureOverride = try c.decodeIfPresent(Double.self, forKey: .temperatureOverride)
+        self.branches = try c.decodeIfPresent([ConversationBranch].self, forKey: .branches) ?? []
         self.profileID = try c.decodeIfPresent(UUID.self, forKey: .profileID)
         self.createdAt = try c.decode(Date.self, forKey: .createdAt)
         self.updatedAt = try c.decode(Date.self, forKey: .updatedAt)
@@ -114,6 +142,9 @@ struct Conversation: Identifiable, Codable, Sendable {
         try c.encode(isPinned, forKey: .isPinned)
         try c.encode(isArchived, forKey: .isArchived)
         try c.encodeIfPresent(systemPromptOverride, forKey: .systemPromptOverride)
+        try c.encodeIfPresent(modelOverride, forKey: .modelOverride)
+        try c.encodeIfPresent(temperatureOverride, forKey: .temperatureOverride)
+        if !branches.isEmpty { try c.encode(branches, forKey: .branches) }
         try c.encodeIfPresent(profileID, forKey: .profileID)
         try c.encode(createdAt, forKey: .createdAt)
         try c.encode(updatedAt, forKey: .updatedAt)

@@ -7,6 +7,11 @@
 
 import SwiftUI
 
+extension Notification.Name {
+    /// Posted by the ⌘N menu command; ContentView starts a fresh conversation.
+    static let newConversation = Notification.Name("LocalMind.newConversation")
+}
+
 @main
 struct LocalMindApp: App {
     @State private var sharedAIManager = AIServiceManager()
@@ -25,8 +30,6 @@ struct LocalMindApp: App {
     }
     
     var body: some Scene {
-        // WindowGroup so ⌘N opens a fresh window. The first window still
-        // restores its position via SwiftUI's built-in scene restoration.
         WindowGroup("LocalMind", id: "main") {
             Group {
                 if sharedProfileStore.isSignedIn {
@@ -78,6 +81,16 @@ struct LocalMindApp: App {
         }
         .commands {
             SidebarCommands()
+            // Replace the default "New Window" (⌘N) with "New Conversation",
+            // matching ChatGPT/Claude desktop and what the in-app help claims.
+            // The window can't call into ContentView's @State directly, so we
+            // bridge through a notification ContentView listens for.
+            CommandGroup(replacing: .newItem) {
+                Button("New Conversation") {
+                    NotificationCenter.default.post(name: .newConversation, object: nil)
+                }
+                .keyboardShortcut("n", modifiers: .command)
+            }
         }
         
         Settings {

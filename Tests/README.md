@@ -25,6 +25,7 @@ xcodebuild test \
 | `NewConversationSendTests.swift` | Regression guard for the new-conversation send race — every binding mutation in `sendMessage()` is observable on the next read |
 | `ImportedMemoryTests.swift` | Cross-AI memory import parser tolerates markdown fences, leading prose, and other messy shapes |
 | `MCPHelpersTests.swift` | Pure-function MCP plumbing — slug formatter, saved-config migrator, executable resolver, SSE event splitter |
+| `EmbeddingTests.swift` | Retrieval math — cosine similarity edge cases and the document chunker (paragraph packing, hard-splitting) |
 
 ## Adding New Tests
 

@@ -43,6 +43,22 @@ struct ChatView: View {
     // System prompt editor
     @State private var showingSystemPromptEditor = false
 
+    // Per-conversation model & generation parameters
+    @State private var showingModelSettings = false
+    // Live slider value, committed to the conversation only on release so a
+    // drag doesn't trigger a disk write on every tick.
+    @State private var tempDraft: Double = AIParameters.default.temperature
+
+    // Side-by-side "compare with another model" sheet
+    @State private var comparison: ModelComparisonRequest?
+
+    // Conversation branches (versions saved on edit/regenerate)
+    @State private var showingBranches = false
+
+    // Knowledge base ("chat with your documents")
+    @State private var showingKnowledgeBase = false
+    @AppStorage("useKnowledgeBase") private var useKnowledgeBase = false
+
     // One-time onboarding hint shown on the empty welcome screen.
     @AppStorage("hasSeenWelcomeHint") private var hasSeenWelcomeHint = false
 
@@ -164,6 +180,44 @@ struct ChatView: View {
                 UserDefaults.standard.set(newValue, forKey: "draft_\(conversationID.uuidString)")
             }
         }
+        .sheet(item: $comparison) { request in
+            ModelCompareView(
+                request: request,
+                aiManager: aiManager,
+                candidateModels: aiManager.allAvailableModelIDs,
+                onReplace: { newText in
+                    if let idx = conversation.messages.firstIndex(where: { $0.id == request.messageID }) {
+                        conversation.messages[idx].content = newText
+                        conversation.updatedAt = Date()
+                    }
+                    comparison = nil
+                },
+                onClose: { comparison = nil }
+            )
+        }
+        // Tool-call approval gate. The MCP service publishes a pending request
+        // while a generation is blocked waiting on the user's decision.
+        .alert(
+            "Allow tool call?",
+            isPresented: Binding(
+                get: { aiManager.mcpService?.pendingApproval != nil },
+                // Dismissal is driven by the buttons (which clear the pending
+                // request); a no-op setter avoids resolving the continuation twice.
+                set: { _ in }
+            ),
+            presenting: aiManager.mcpService?.pendingApproval
+        ) { request in
+            Button("Allow once") { request.respond(.allowOnce) }
+            Button("Always allow this tool") { request.respond(.allowAlways) }
+            Button("Deny", role: .cancel) { request.respond(.deny) }
+        } message: { request in
+            Text("\(request.serverName) wants to run “\(request.toolName)”.\n\n\(request.argumentsPreview)")
+        }
+        .sheet(isPresented: $showingKnowledgeBase) {
+            KnowledgeBaseView(store: KnowledgeBaseStore.shared) {
+                showingKnowledgeBase = false
+            }
+        }
     }
 
     // MARK: - Chat Header
@@ -189,6 +243,54 @@ struct ChatView: View {
             }
 
             Spacer()
+
+            // Branch navigator — only appears once the chat has forked at least
+            // once (an edit or regenerate saved a previous version).
+            if !conversation.branches.isEmpty {
+                Button {
+                    showingBranches = true
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.triangle.branch")
+                            .font(.system(size: 13))
+                        Text("\(conversation.branches.count)")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundStyle(AppTheme.Colors.textTertiary)
+                }
+                .buttonStyle(.plain)
+                .help("Earlier versions of this conversation")
+                .popover(isPresented: $showingBranches, arrowEdge: .bottom) {
+                    branchListPopover
+                }
+            }
+
+            // Knowledge base — "chat with your documents". Filled when active.
+            Button {
+                showingKnowledgeBase = true
+            } label: {
+                Image(systemName: useKnowledgeBase ? "books.vertical.fill" : "books.vertical")
+                    .font(.system(size: 14))
+                    .foregroundStyle(useKnowledgeBase ? AppTheme.Colors.accentPrimary : AppTheme.Colors.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .help(useKnowledgeBase ? "Your documents are being used in chats" : "Chat with your documents")
+
+            // Per-conversation model & generation parameters. "cpu" reads as
+            // "which model / how it generates" for this chat specifically.
+            Button {
+                showingModelSettings = true
+            } label: {
+                Image(systemName: "cpu")
+                    .font(.system(size: 14))
+                    .foregroundStyle(hasModelParamOverride ? AppTheme.Colors.accentPrimary : AppTheme.Colors.textTertiary)
+                    .symbolVariant(hasModelParamOverride ? .fill : .none)
+            }
+            .buttonStyle(.plain)
+            .help(hasModelParamOverride ? "Custom model / temperature set for this conversation" : "Set model & temperature for this conversation")
+            .popover(isPresented: $showingModelSettings, arrowEdge: .bottom) {
+                modelSettingsPopover
+            }
 
             // Per-conversation system-prompt override (left of export). Uses a
             // "tuning sliders" glyph so it reads as conversation behaviour /
@@ -267,7 +369,160 @@ struct ChatView: View {
         }
         return "\(tokens) tokens"
     }
-    
+
+    // MARK: - Per-conversation model & parameters
+
+    /// True when this conversation pins its own model or temperature.
+    private var hasModelParamOverride: Bool {
+        conversation.modelOverride != nil || conversation.temperatureOverride != nil
+    }
+
+    /// Label for the backend's globally-selected model — shown as the
+    /// "Default" option so the user knows what they fall back to.
+    private var globalModelLabel: String {
+        switch aiManager.currentBackend {
+        case .ollama: return aiManager.selectedOllamaModel
+        case .openAICompatible: return aiManager.selectedOpenAIModel
+        case .appleFoundationModels: return "Apple Intelligence"
+        case .none: return "—"
+        }
+    }
+
+    /// Pins a model and/or temperature for this conversation only. Both follow
+    /// the global settings until explicitly overridden; "Reset" clears them.
+    /// Mutating `conversation` persists automatically via its binding setter.
+    private var modelSettingsPopover: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Model & Parameters")
+                    .font(AppTheme.Typography.headline)
+                Text("Applies to this conversation only.")
+                    .font(AppTheme.Typography.captionSecondary)
+                    .foregroundStyle(.secondary)
+            }
+
+            if !aiManager.allAvailableModelIDs.isEmpty {
+                VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
+                    Text("MODEL")
+                        .font(AppTheme.Typography.captionSecondary)
+                        .foregroundStyle(AppTheme.Colors.textTertiary)
+                        .tracking(1.2)
+                    Picker("", selection: Binding(
+                        get: { conversation.modelOverride ?? "" },
+                        set: { conversation.modelOverride = $0.isEmpty ? nil : $0 }
+                    )) {
+                        Text("Default (\(globalModelLabel))").tag("")
+                        ForEach(aiManager.allAvailableModelIDs, id: \.self) { model in
+                            Text(model).tag(model)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                }
+            } else {
+                Text("The active backend (\(globalModelLabel)) doesn't expose selectable models.")
+                    .font(AppTheme.Typography.captionSecondary)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
+                HStack {
+                    Text("TEMPERATURE")
+                        .font(AppTheme.Typography.captionSecondary)
+                        .foregroundStyle(AppTheme.Colors.textTertiary)
+                        .tracking(1.2)
+                    Spacer()
+                    Text(String(format: "%.2f", tempDraft))
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(conversation.temperatureOverride != nil ? AppTheme.Colors.accentPrimary : AppTheme.Colors.textSecondary)
+                }
+                Slider(value: $tempDraft, in: 0...1, step: 0.05) { editing in
+                    if !editing { conversation.temperatureOverride = tempDraft }
+                }
+                Text("Lower = focused & deterministic · Higher = creative & varied")
+                    .font(AppTheme.Typography.captionSecondary)
+                    .foregroundStyle(AppTheme.Colors.textTertiary)
+            }
+
+            Divider()
+
+            HStack {
+                Button("Reset to defaults") {
+                    conversation.modelOverride = nil
+                    conversation.temperatureOverride = nil
+                    tempDraft = aiManager.aiParameters.temperature
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .disabled(!hasModelParamOverride)
+                Spacer()
+                Button("Done") { showingModelSettings = false }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(AppTheme.Spacing.lg)
+        .frame(width: 320)
+        .onAppear { tempDraft = conversation.temperatureOverride ?? aiManager.aiParameters.temperature }
+    }
+
+    // MARK: - Branch navigator
+
+    private var branchListPopover: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Conversation Branches")
+                    .font(AppTheme.Typography.headline)
+                Text("Versions saved when you edited or regenerated. Restore one to bring that path back.")
+                    .font(AppTheme.Typography.captionSecondary)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Divider()
+
+            ScrollView {
+                LazyVStack(spacing: 6) {
+                    ForEach(conversation.branches.reversed()) { branch in
+                        branchRow(branch)
+                    }
+                }
+            }
+        }
+        .padding(AppTheme.Spacing.lg)
+        .frame(width: 380, height: 380)
+    }
+
+    private func branchRow(_ branch: ConversationBranch) -> some View {
+        HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(branch.label)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                Text("\(branch.messages.count) messages" + (branch.messages.last.map { " · \($0.content.prefix(48))" } ?? ""))
+                    .font(AppTheme.Typography.captionSecondary)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Button("Restore") { restoreBranch(branch) }
+                .controlSize(.small)
+            Button {
+                deleteBranch(branch)
+            } label: {
+                Image(systemName: "trash").font(.system(size: 11))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Delete this saved version")
+        }
+        .padding(AppTheme.Spacing.sm)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(AppTheme.Colors.backgroundSecondary.opacity(0.5))
+        )
+    }
+
     // MARK: - Messages Area
 
     private var messagesArea: some View {
@@ -281,7 +536,8 @@ struct ChatView: View {
                             onPlay: { voiceManager.speak(text: message.content) },
                             onDelete: { deleteMessage(message) },
                             onEdit: message.role == .user ? { newContent in editAndResend(message: message, newContent: newContent) } : nil,
-                            onRegenerate: message.role == .assistant ? { regenerate(from: message) } : nil
+                            onRegenerate: message.role == .assistant ? { regenerate(from: message) } : nil,
+                            onCompare: message.role == .assistant ? { startComparison(for: message) } : nil
                         )
                         .id(message.id)
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
@@ -726,22 +982,15 @@ struct ChatView: View {
         return nil
     }
     
-    private func generateResponse() async {
-        guard let service = aiManager.currentService else {
-            let errorMsg = ChatMessage(role: .assistant, content: "⚠️ \(AIServiceError.noBackendAvailable.localizedDescription)\n\n💡 \(AIServiceError.noBackendAvailable.recoverySuggestion ?? "")")
-            conversation.messages.append(errorMsg)
-            dataStore.saveConversation(conversation)
-            return
-        }
-        
-        isStreaming = true
-        streamingContent = ""
-        
-        var systemPrompt = UserDefaults.standard.string(forKey: "defaultSystemPrompt") ?? "You are LocalMind, a helpful, concise AI assistant. Provide clear, actionable responses. Use markdown formatting when appropriate."
-        if systemPrompt.isEmpty {
-            systemPrompt = "You are LocalMind, a helpful, concise AI assistant. Provide clear, actionable responses. Use markdown formatting when appropriate."
-        }
-        
+    /// Builds the effective system prompt: global default (or custom-tool
+    /// prompt), overridden per-conversation, with the active profile's Personal
+    /// Context prepended. Shared by the main generation and the compare view so
+    /// an alternative answer is produced under identical conditions.
+    private func resolvedSystemPrompt() -> String {
+        let fallback = "You are LocalMind, a helpful, concise AI assistant. Provide clear, actionable responses. Use markdown formatting when appropriate."
+        var systemPrompt = UserDefaults.standard.string(forKey: "defaultSystemPrompt") ?? fallback
+        if systemPrompt.isEmpty { systemPrompt = fallback }
+
         if let customToolID = conversation.customToolID,
            let customTool = dataStore.customTools.first(where: { $0.id == customToolID }) {
             systemPrompt = customTool.systemPrompt
@@ -752,24 +1001,69 @@ struct ChatView: View {
             systemPrompt = override
         }
 
-        // Prepend the active profile's Personal Context. This is the user's
-        // portable, cross-provider memory — facts about them the AI should
-        // know on every chat, regardless of which backend is active.
+        // Prepend the active profile's Personal Context — the user's portable,
+        // cross-provider memory the AI should know on every chat.
         let personalContext = ProfileStore.currentPersonalContext()
         if !personalContext.isEmpty {
             systemPrompt = personalContext + "\n\n---\n\n" + systemPrompt
+        }
+        return systemPrompt
+    }
+
+    private func generateResponse(modelOverride oneShotModel: String? = nil) async {
+        guard let service = aiManager.currentService else {
+            let errorMsg = ChatMessage(role: .assistant, content: "⚠️ \(AIServiceError.noBackendAvailable.localizedDescription)\n\n💡 \(AIServiceError.noBackendAvailable.recoverySuggestion ?? "")")
+            conversation.messages.append(errorMsg)
+            dataStore.saveConversation(conversation)
+            return
+        }
+        
+        isStreaming = true
+        streamingContent = ""
+
+        var systemPrompt = resolvedSystemPrompt()
+
+        // Retrieval-augmented generation: when the user has enabled their
+        // document store, pull the most relevant chunks for the latest question
+        // and prepend them so the model can ground its answer in those docs.
+        if useKnowledgeBase,
+           let lastUserMessage = conversation.messages.last(where: { $0.role == .user })?.content {
+            let hits = KnowledgeBaseStore.shared.search(lastUserMessage)
+            if !hits.isEmpty {
+                let excerpts = hits.enumerated()
+                    .map { "[\($0.offset + 1)] \($0.element.text)" }
+                    .joined(separator: "\n\n")
+                systemPrompt = """
+                The user has shared personal documents. Use the excerpts below to answer when they're relevant, and say so plainly if they don't contain the answer. Don't invent details they don't support.
+
+                <documents>
+                \(excerpts)
+                </documents>
+
+                \(systemPrompt)
+                """
+            }
         }
 
         // Apply context limit
         let contextLimit = UserDefaults.standard.integer(forKey: "contextMessageLimit")
         let limit = contextLimit > 0 ? contextLimit : 10
         let recentMessages = Array(conversation.messages.suffix(limit))
-        
+
+        // Per-conversation overrides layer on top of the global settings. A
+        // one-shot model (used by "regenerate with another model") wins over
+        // the conversation's pinned model.
+        let effectiveModel = oneShotModel ?? conversation.modelOverride
+        var effectiveParameters = aiManager.aiParameters
+        if let temperature = conversation.temperatureOverride {
+            effectiveParameters.temperature = temperature
+        }
+
         do {
             let availableTools = aiManager.getAvailableTools()
             let tools = availableTools.isEmpty ? nil : availableTools
             var pendingToolCalls: [AIToolCall] = []
-            for try await chunk in service.streamChat(messages: recentMessages, systemPrompt: systemPrompt, modelOverride: nil, parameters: aiManager.aiParameters, tools: tools) {
+            for try await chunk in service.streamChat(messages: recentMessages, systemPrompt: systemPrompt, modelOverride: effectiveModel, parameters: effectiveParameters, tools: tools) {
                 if Task.isCancelled { break }
                 switch chunk {
                 case .text(let text):
@@ -844,6 +1138,9 @@ struct ChatView: View {
         // Stop any in-flight stream first
         if isStreaming { stopStreaming() }
 
+        // Preserve the path we're about to fork away from.
+        snapshotBranch(divergingAt: index, label: "Before edit")
+
         // Truncate to and including the edited message, with updated content
         var updatedMessage = conversation.messages[index]
         updatedMessage.content = newContent
@@ -860,12 +1157,66 @@ struct ChatView: View {
 
         if isStreaming { stopStreaming() }
 
+        // Preserve the answer (and tail) we're about to throw away.
+        snapshotBranch(divergingAt: index, label: "Before regenerate")
+
         // Drop the AI message and everything after it
         conversation.messages = Array(conversation.messages[..<index])
         conversation.updatedAt = Date()
         dataStore.saveConversation(conversation)
 
         currentStreamTask = Task { await generateResponse() }
+    }
+
+    // MARK: - Branches
+
+    /// Save the current message list as a recoverable branch before a fork
+    /// (edit or regenerate) discards part of it. No-op when nothing is lost.
+    private func snapshotBranch(divergingAt index: Int, label: String) {
+        guard index < conversation.messages.count else { return }
+        let stamp = Date().formatted(date: .omitted, time: .shortened)
+        conversation.branches.append(ConversationBranch(label: "\(label) · \(stamp)", messages: conversation.messages))
+        // Keep only the most recent few so a long editing session can't bloat
+        // the on-disk conversation.
+        if conversation.branches.count > 10 {
+            conversation.branches.removeFirst(conversation.branches.count - 10)
+        }
+    }
+
+    /// Load a saved branch, first stashing the current path so the switch is
+    /// itself reversible.
+    private func restoreBranch(_ branch: ConversationBranch) {
+        if isStreaming { stopStreaming() }
+        let stamp = Date().formatted(date: .omitted, time: .shortened)
+        let currentMessages = conversation.messages
+        conversation.branches.removeAll { $0.id == branch.id }
+        conversation.branches.append(ConversationBranch(label: "Replaced · \(stamp)", messages: currentMessages))
+        if conversation.branches.count > 10 {
+            conversation.branches.removeFirst(conversation.branches.count - 10)
+        }
+        conversation.messages = branch.messages
+        conversation.updatedAt = Date()
+        showingBranches = false
+    }
+
+    private func deleteBranch(_ branch: ConversationBranch) {
+        conversation.branches.removeAll { $0.id == branch.id }
+    }
+
+    /// Opens the side-by-side compare sheet for an assistant message, capturing
+    /// the same prior context that produced it so a different model answers the
+    /// identical prompt. The result is non-destructive until the user chooses.
+    private func startComparison(for message: ChatMessage) {
+        guard let index = conversation.messages.firstIndex(where: { $0.id == message.id }) else { return }
+        let contextLimit = UserDefaults.standard.integer(forKey: "contextMessageLimit")
+        let limit = contextLimit > 0 ? contextLimit : 10
+        let context = Array(conversation.messages[..<index].suffix(limit))
+        comparison = ModelComparisonRequest(
+            messageID: message.id,
+            contextMessages: context,
+            systemPrompt: resolvedSystemPrompt(),
+            originalContent: message.content
+        )
     }
 
     private func stopStreaming() {
@@ -1255,5 +1606,151 @@ struct SystemPromptEditor: View {
         }
         .padding(AppTheme.Spacing.lg)
         .frame(width: 520, height: 420)
+    }
+}
+
+// MARK: - Model Comparison
+
+/// Captures everything needed to reproduce an assistant turn under a different
+/// model, without mutating the conversation until the user commits a choice.
+struct ModelComparisonRequest: Identifiable {
+    let id = UUID()
+    let messageID: UUID
+    let contextMessages: [ChatMessage]
+    let systemPrompt: String
+    let originalContent: String
+}
+
+/// Side-by-side comparison: the existing answer on the left, a freshly streamed
+/// answer from a chosen model on the right. The user keeps one or the other.
+struct ModelCompareView: View {
+    let request: ModelComparisonRequest
+    let aiManager: AIServiceManager
+    let candidateModels: [String]
+    let onReplace: (String) -> Void
+    let onClose: () -> Void
+
+    @State private var selectedModel: String = ""
+    @State private var altContent: String = ""
+    @State private var isGenerating = false
+    @State private var didFinish = false
+    @State private var genTask: Task<Void, Never>?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Compare Models")
+                        .font(AppTheme.Typography.headline)
+                    Text("Answer the same prompt with another model, then keep the one you prefer.")
+                        .font(AppTheme.Typography.captionSecondary)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Close", action: onClose)
+                    .keyboardShortcut(.cancelAction)
+            }
+
+            HStack(spacing: AppTheme.Spacing.sm) {
+                if candidateModels.isEmpty {
+                    Text("The active backend exposes no selectable models to compare against.")
+                        .font(AppTheme.Typography.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Picker("", selection: $selectedModel) {
+                        ForEach(candidateModels, id: \.self) { Text($0).tag($0) }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: 260)
+
+                    Button(isGenerating ? "Generating…" : (didFinish ? "Regenerate" : "Generate")) {
+                        generate()
+                    }
+                    .disabled(isGenerating || selectedModel.isEmpty)
+                }
+                Spacer()
+            }
+
+            HStack(alignment: .top, spacing: 0) {
+                compareColumn(title: "Current answer", text: request.originalContent, accent: false, showSpinner: false)
+                Divider()
+                compareColumn(
+                    title: selectedModel.isEmpty ? "Alternative" : selectedModel,
+                    text: altContent.isEmpty && !isGenerating ? "Press Generate to produce an alternative." : altContent,
+                    accent: true,
+                    showSpinner: isGenerating && altContent.isEmpty
+                )
+            }
+            .frame(maxHeight: .infinity)
+            .background {
+                RoundedRectangle(cornerRadius: 8).stroke(AppTheme.Colors.border, lineWidth: 1)
+            }
+
+            HStack {
+                Spacer()
+                Button("Keep current", action: onClose)
+                Button("Use alternative") { onReplace(altContent) }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(altContent.isEmpty || isGenerating || !didFinish)
+            }
+        }
+        .padding(AppTheme.Spacing.lg)
+        .frame(width: 820, height: 560)
+        .onAppear { selectedModel = candidateModels.first ?? "" }
+        .onDisappear { genTask?.cancel() }
+    }
+
+    private func compareColumn(title: String, text: String, accent: Bool, showSpinner: Bool) -> some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(accent ? AppTheme.Colors.accentPrimary : AppTheme.Colors.textSecondary)
+                .lineLimit(1)
+            ScrollView {
+                if showSpinner {
+                    HStack(spacing: AppTheme.Spacing.sm) {
+                        ProgressView().controlSize(.small)
+                        Text("Generating…").foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    MessageMarkdownView(text: text)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+        .padding(AppTheme.Spacing.md)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func generate() {
+        genTask?.cancel()
+        altContent = ""
+        isGenerating = true
+        didFinish = false
+        let model = selectedModel
+        genTask = Task {
+            guard let service = aiManager.currentService else {
+                isGenerating = false
+                return
+            }
+            do {
+                for try await chunk in service.streamChat(
+                    messages: request.contextMessages,
+                    systemPrompt: request.systemPrompt,
+                    modelOverride: model,
+                    parameters: aiManager.aiParameters,
+                    tools: nil
+                ) {
+                    if Task.isCancelled { break }
+                    if case .text(let text) = chunk { altContent += text }
+                }
+            } catch {
+                altContent += "\n\n⚠️ \(error.localizedDescription)"
+            }
+            isGenerating = false
+            didFinish = true
+        }
     }
 }

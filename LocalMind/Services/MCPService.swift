@@ -37,6 +37,21 @@ final class MCPService {
     /// toggle sheet so it can show greyed-out rows for disabled ones.
     private(set) var allToolsByServer: [String: [MCPTool]] = [:]
 
+    /// Newest-last record of every tool call the model attempted this session.
+    /// Capped so a runaway agent loop can't grow it without bound. Session-only
+    /// by design — a fresh launch starts with a clean slate.
+    private(set) var auditLog: [MCPToolCallRecord] = []
+    private static let maxAuditRecords = 250
+
+    /// A tool call awaiting the user's approve/deny decision. The UI binds to
+    /// this and invokes `respond`. Only one is ever pending because tool calls
+    /// run sequentially.
+    var pendingApproval: MCPToolApprovalRequest?
+
+    /// Exposed tool names the user chose to "always allow" — session-scoped, so
+    /// trust has to be re-granted each launch.
+    private var autoApprovedTools: Set<String> = []
+
     /// Scheduled reconnect tasks, keyed by server name. Canceled when the
     /// user disables a server or a connect attempt finally succeeds.
     private var retryTasks: [String: Task<Void, Never>] = [:]
@@ -303,9 +318,98 @@ final class MCPService {
 
     func callTool(name: String, arguments: [String: Any]) async throws -> [MCPToolContent] {
         guard let route = toolRoute[name], let client = clients[route.serverName] else {
+            recordAudit(toolName: name, serverName: "—", arguments: arguments, status: .error, detail: "Server not connected")
             throw MCPError.notConnected
         }
-        return try await client.callTool(name: route.originalName, arguments: arguments)
+
+        // Gate on user approval before anything touches the user's machine.
+        let approved = await requestApproval(toolName: name, serverName: route.serverName, arguments: arguments)
+        guard approved else {
+            recordAudit(toolName: name, serverName: route.serverName, arguments: arguments, status: .denied, detail: "Denied by user")
+            throw MCPError.serverError("Tool call denied by user")
+        }
+
+        do {
+            let content = try await client.callTool(name: route.originalName, arguments: arguments)
+            let summary = content.compactMap { $0.text }.joined(separator: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            recordAudit(toolName: name, serverName: route.serverName, arguments: arguments, status: .allowed,
+                        detail: summary.isEmpty ? "Completed (no text output)" : String(summary.prefix(300)))
+            return content
+        } catch {
+            recordAudit(toolName: name, serverName: route.serverName, arguments: arguments, status: .error, detail: error.localizedDescription)
+            throw error
+        }
+    }
+
+    // MARK: - Approval & Audit
+
+    /// Returns true if the call may proceed. Auto-approves when the global
+    /// setting is off or the user already chose "always allow" for this tool;
+    /// otherwise publishes a `pendingApproval` and waits for the UI to answer.
+    private func requestApproval(toolName: String, serverName: String, arguments: [String: Any]) async -> Bool {
+        let requireApproval = UserDefaults.standard.object(forKey: "mcpRequireApproval") as? Bool ?? true
+        if !requireApproval { return true }
+        if autoApprovedTools.contains(toolName) { return true }
+
+        let preview = Self.previewArguments(arguments)
+        return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            // Guard against a double-resume if both a button and the alert's
+            // dismissal fire — resuming a continuation twice traps.
+            var settled = false
+            let finish: (Bool) -> Void = { value in
+                guard !settled else { return }
+                settled = true
+                continuation.resume(returning: value)
+            }
+            pendingApproval = MCPToolApprovalRequest(
+                toolName: toolName,
+                serverName: serverName,
+                argumentsPreview: preview
+            ) { [weak self] decision in
+                self?.pendingApproval = nil
+                switch decision {
+                case .allowOnce:
+                    finish(true)
+                case .allowAlways:
+                    self?.autoApprovedTools.insert(toolName)
+                    finish(true)
+                case .deny:
+                    finish(false)
+                }
+            }
+        }
+    }
+
+    @discardableResult
+    private func recordAudit(toolName: String, serverName: String, arguments: [String: Any],
+                             status: MCPToolCallRecord.Status, detail: String) -> MCPToolCallRecord {
+        let record = MCPToolCallRecord(
+            timestamp: Date(),
+            toolName: toolName,
+            serverName: serverName,
+            argumentsPreview: Self.previewArguments(arguments),
+            status: status,
+            detail: detail
+        )
+        auditLog.append(record)
+        if auditLog.count > Self.maxAuditRecords {
+            auditLog.removeFirst(auditLog.count - Self.maxAuditRecords)
+        }
+        return record
+    }
+
+    func clearAuditLog() { auditLog.removeAll() }
+
+    /// Compact, bounded JSON preview of tool arguments for the approval prompt
+    /// and the audit log.
+    nonisolated static func previewArguments(_ arguments: [String: Any]) -> String {
+        guard !arguments.isEmpty else { return "No arguments." }
+        if let data = try? JSONSerialization.data(withJSONObject: arguments, options: [.sortedKeys]),
+           let str = String(data: data, encoding: .utf8) {
+            return str.count > 500 ? String(str.prefix(500)) + "…" : str
+        }
+        return arguments.keys.sorted().joined(separator: ", ")
     }
 
     /// Lowercase, hyphen-separated, alphanumeric-and-hyphen only — produces
@@ -343,4 +447,42 @@ final class MCPService {
 
     var allConfigs: [MCPServerConfig] { serverConfigs }
     var isAnyConnected: Bool { connectionStates.values.contains { if case .connected = $0 { true } else { false } } }
+}
+
+// MARK: - Approval & Audit types
+
+/// One entry in the tool-call audit trail.
+struct MCPToolCallRecord: Identifiable, Sendable {
+    enum Status: String, Sendable {
+        case allowed = "Ran"
+        case denied  = "Denied"
+        case error   = "Failed"
+
+        var systemImage: String {
+            switch self {
+            case .allowed: return "checkmark.circle.fill"
+            case .denied:  return "hand.raised.fill"
+            case .error:   return "exclamationmark.triangle.fill"
+            }
+        }
+    }
+
+    let id = UUID()
+    let timestamp: Date
+    let toolName: String
+    let serverName: String
+    let argumentsPreview: String
+    let status: Status
+    let detail: String
+}
+
+/// A pending approval the UI must answer before a tool call proceeds.
+struct MCPToolApprovalRequest: Identifiable {
+    enum Decision { case allowOnce, allowAlways, deny }
+
+    let id = UUID()
+    let toolName: String
+    let serverName: String
+    let argumentsPreview: String
+    let respond: (Decision) -> Void
 }
