@@ -231,6 +231,25 @@ nonisolated struct OllamaChatChunk: Decodable, Sendable {
     nonisolated struct OllamaFunctionCall: Decodable, Sendable {
         let name: String?
         let arguments: String?
+
+        enum CodingKeys: String, CodingKey {
+            case name, arguments
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            name = try c.decodeIfPresent(String.self, forKey: .name)
+            // Ollama sends arguments as a JSON object (unlike OpenAI's
+            // stringified JSON); accept both and normalise to a string.
+            if let str = try? c.decodeIfPresent(String.self, forKey: .arguments) {
+                arguments = str
+            } else if let obj = try? c.decodeIfPresent(AnyCodable.self, forKey: .arguments),
+                      let data = try? JSONEncoder().encode(obj) {
+                arguments = String(data: data, encoding: .utf8)
+            } else {
+                arguments = nil
+            }
+        }
     }
 }
 
