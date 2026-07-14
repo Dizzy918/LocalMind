@@ -31,6 +31,8 @@ struct SettingsView: View {
     @AppStorage("enableGlobalShortcut") private var enableGlobalShortcut: Bool = false
     @AppStorage("defaultSystemPrompt") private var defaultSystemPrompt: String = "You are LocalMind, a helpful, concise AI assistant. Provide clear, actionable responses. Use markdown formatting when appropriate."
     @AppStorage("contextMessageLimit") private var contextMessageLimit: Int = 10
+    @AppStorage("rememberPastChats") private var rememberPastChats: Bool = false
+    @State private var memoryEntryCount = 0
     
     enum SettingsTab: String, CaseIterable {
         case general = "General"
@@ -38,6 +40,7 @@ struct SettingsView: View {
         case providers = "Providers"
         case chat = "Chat"
         case data = "Data"
+        case agents = "Agents"
         case customTools = "Tools"
         case mcp = "MCP"
         case about = "About"
@@ -49,6 +52,7 @@ struct SettingsView: View {
             case .providers: return "network"
             case .chat: return "message"
             case .data: return "lock.shield"
+            case .agents: return "person.3"
             case .customTools: return "hammer"
             case .mcp: return "server.rack"
             case .about: return "info.circle"
@@ -78,6 +82,10 @@ struct SettingsView: View {
                 .tabItem { Label(SettingsTab.data.rawValue, systemImage: SettingsTab.data.icon) }
                 .tag(SettingsTab.data)
             
+            AgentSettingsView(dataStore: dataStore, aiManager: aiManager)
+                .tabItem { Label(SettingsTab.agents.rawValue, systemImage: SettingsTab.agents.icon) }
+                .tag(SettingsTab.agents)
+
             CustomToolSettingsView(dataStore: dataStore)
                 .tabItem { Label(SettingsTab.customTools.rawValue, systemImage: SettingsTab.customTools.icon) }
                 .tag(SettingsTab.customTools)
@@ -137,17 +145,62 @@ struct SettingsView: View {
     }
     
     // MARK: - Providers Tab
+
+    /// The model the active backend is answering with, if it exposes one.
+    private var activeProviderModel: String? {
+        switch aiManager.currentBackend {
+        case .ollama: return aiManager.selectedOllamaModel
+        case .openAICompatible: return aiManager.selectedOpenAIModel
+        case .appleFoundationModels: return "On-device (Foundation Models)"
+        case .none: return nil
+        }
+    }
+
+    /// Where the active backend lives.
+    private var activeProviderServer: String? {
+        switch aiManager.currentBackend {
+        case .ollama: return "http://localhost:11434"
+        case .openAICompatible: return "\(aiManager.openAIServerName) — \(aiManager.openAIServerURL)"
+        case .appleFoundationModels: return "This Mac"
+        case .none: return nil
+        }
+    }
+
+    private var availableModelCount: Int? {
+        switch aiManager.currentBackend {
+        case .ollama: return aiManager.availableModels.count
+        case .openAICompatible: return aiManager.availableOpenAIModels.count
+        case .appleFoundationModels, .none: return nil
+        }
+    }
+
+    private func providerDetailRow(_ label: String, _ value: String) -> some View {
+        GridRow {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.caption.weight(.medium))
+                .textSelection(.enabled)
+        }
+    }
+
     private var providersTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: AppTheme.Spacing.xl) {
-                // Current status
+                // Current status — full details inline. (The sidebar's
+                // StatusBadge is a bare dot with a hover popover, which reads
+                // as broken in a settings pane.)
                 GroupBox("Current Status") {
                     VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
                         HStack {
-                            StatusBadge(
-                                backend: aiManager.currentBackend,
-                                statusMessage: aiManager.statusMessage
-                            )
+                            Circle()
+                                .fill(aiManager.currentBackend != .none
+                                      ? AppTheme.Colors.statusOnline
+                                      : AppTheme.Colors.statusOffline)
+                                .frame(width: 9, height: 9)
+                            Text(aiManager.statusMessage)
+                                .font(.system(size: 13, weight: .medium))
                             Spacer()
                             if aiManager.isCheckingAvailability {
                                 ProgressView()
@@ -158,6 +211,26 @@ struct SettingsView: View {
                                 Task { await aiManager.refresh() }
                             }
                             .disabled(aiManager.isCheckingAvailability)
+                        }
+
+                        if aiManager.currentBackend != .none {
+                            Divider()
+                            Grid(alignment: .leading, horizontalSpacing: AppTheme.Spacing.xl, verticalSpacing: 6) {
+                                providerDetailRow("Backend", aiManager.currentBackend.rawValue)
+                                if let model = activeProviderModel {
+                                    providerDetailRow("Active model", model)
+                                }
+                                if let server = activeProviderServer {
+                                    providerDetailRow("Server", server)
+                                }
+                                if let modelCount = availableModelCount {
+                                    providerDetailRow("Models available", "\(modelCount)")
+                                }
+                                let toolCount = aiManager.getAvailableTools().count
+                                if toolCount > 0 {
+                                    providerDetailRow("MCP tools", "\(toolCount) connected")
+                                }
+                            }
                         }
                     }
                     .padding(AppTheme.Spacing.sm)
@@ -270,12 +343,21 @@ struct SettingsView: View {
                         .padding(AppTheme.Spacing.sm)
                     }
                 }
+
+                // In-app model management: pull/delete for Ollama, live
+                // catalogue for OpenAI-compatible servers.
+                GroupBox("Models") {
+                    ModelManagerView(aiManager: aiManager)
+                        .padding(AppTheme.Spacing.sm)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
                 Spacer()
             }
             .padding(AppTheme.Spacing.xl)
         }
     }
-    
+
     // MARK: - Chat Tab
     private var chatTab: some View {
         Form {
@@ -285,12 +367,38 @@ struct SettingsView: View {
                     .font(.body)
             }
             
-            Section(header: Text("Context Limit"), footer: Text("Number of past messages included to provide context. Higher uses more memory.")) {
+            Section(header: Text("Context Limit"), footer: Text("Number of past messages included to provide context (also capped by the model's token budget). When older messages fall out, a rolling summary keeps their gist in context.")) {
                 Picker("Include past messages:", selection: $contextMessageLimit) {
                     Text("5 messages").tag(5)
                     Text("10 messages").tag(10)
                     Text("20 messages").tag(20)
                     Text("50 messages").tag(50)
+                }
+            }
+
+            Section(header: Text("Memory"), footer: Text("Recalls relevant exchanges from your other conversations when you chat, so the AI remembers what you've discussed before. Indexed on-device with Apple embeddings; nothing leaves your Mac.")) {
+                Toggle("Remember past conversations", isOn: $rememberPastChats)
+                if rememberPastChats {
+                    HStack {
+                        Text("\(memoryEntryCount) exchange\(memoryEntryCount == 1 ? "" : "s") remembered")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Forget everything") {
+                            ChatMemoryStore.shared.forgetEverything()
+                            memoryEntryCount = 0
+                        }
+                        .controlSize(.small)
+                    }
+                }
+            }
+            .onAppear { memoryEntryCount = ChatMemoryStore.shared.entryCount }
+            .onChange(of: rememberPastChats) { _, enabled in
+                // Backfill the index the moment the feature is switched on.
+                guard enabled else { return }
+                Task {
+                    await ChatMemoryStore.shared.syncAll(dataStore.conversations)
+                    memoryEntryCount = ChatMemoryStore.shared.entryCount
                 }
             }
             

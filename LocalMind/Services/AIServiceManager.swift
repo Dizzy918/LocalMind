@@ -136,6 +136,18 @@ final class AIServiceManager {
         self.mcpService = mcpService
     }
 
+    /// Test-only seam: pins a specific service as the current one and stops
+    /// background polling so a live local server can't replace it mid-test.
+    /// Production code must never call this — connections go through
+    /// `detectAndConnect()`.
+    func setServiceForTesting(_ service: any AIServiceProtocol) {
+        pollingTask?.cancel()
+        currentService = service
+        currentBackend = service.backend
+        statusMessage = "Connected to \(service.backendName)"
+        isCheckingAvailability = false
+    }
+
     /// Executes a batch of tool calls via the MCP service and invokes
     /// `onResult` for each, with a human-readable summary for chat injection.
     func executeToolCalls(_ calls: [AIToolCall], onResult: (String, String) -> Void) async {
@@ -163,6 +175,134 @@ final class AIServiceManager {
                 description: mcpTool.description ?? "",
                 inputSchema: mcpTool.inputSchema
             )
+        }
+    }
+
+    // MARK: - Cross-backend Resolution
+
+    /// Resolves a live service for a specific backend, regardless of which
+    /// one is currently active. This is what lets an agent pinned to Ollama
+    /// answer while the app is connected to Apple Intelligence (and lets a
+    /// team run mix backends). Falls back to the current service when the
+    /// requested backend is unreachable, so a dead pin degrades gracefully
+    /// instead of erroring.
+    func service(matching backend: AIBackend?) async -> (any AIServiceProtocol)? {
+        guard let backend, backend != currentBackend else { return currentService }
+        switch backend {
+        case .appleFoundationModels:
+            if let apple = appleService, await apple.checkAvailability() {
+                return apple
+            }
+        case .ollama:
+            if await ollamaService.checkAvailability() {
+                // The service's default model is only set when Ollama becomes
+                // the active backend — make sure a cross-backend call doesn't
+                // run whatever model a previous session left behind.
+                await ollamaService.setModel(selectedOllamaModel)
+                return ollamaService
+            }
+        case .openAICompatible:
+            if let existing = openAIService, await existing.checkAvailability() {
+                return existing
+            }
+            if let created = createOpenAIService(), await created.checkAvailability() {
+                openAIService = created
+                return created
+            }
+        case .none:
+            break
+        }
+        return currentService
+    }
+
+    /// Whether a specific backend is reachable right now. Used by the agent
+    /// editor to hint at dead pins.
+    func isBackendAvailable(_ backend: AIBackend) async -> Bool {
+        switch backend {
+        case .appleFoundationModels:
+            guard let apple = appleService else { return false }
+            return await apple.checkAvailability()
+        case .ollama:
+            return await ollamaService.checkAvailability()
+        case .openAICompatible:
+            if let existing = openAIService { return await existing.checkAvailability() }
+            guard let created = createOpenAIService() else { return false }
+            return await created.checkAvailability()
+        case .none:
+            return false
+        }
+    }
+
+    /// Model IDs offered by a specific backend, fetched live when that
+    /// backend isn't the active one. Drives the agent editor's model picker.
+    func modelIDs(for backend: AIBackend) async -> [String] {
+        switch backend {
+        case .ollama:
+            if backend == currentBackend, !availableModels.isEmpty {
+                return availableModels.map(\.name)
+            }
+            return (try? await ollamaService.listModels())?.map(\.name) ?? []
+        case .openAICompatible:
+            if backend == currentBackend, !availableOpenAIModels.isEmpty {
+                return availableOpenAIModels.map(\.id)
+            }
+            if let existing = openAIService {
+                return (try? await existing.listModels())?.map(\.id) ?? []
+            }
+            if let created = createOpenAIService() {
+                return (try? await created.listModels())?.map(\.id) ?? []
+            }
+            return []
+        case .appleFoundationModels, .none:
+            return []
+        }
+    }
+
+    /// The model name a given agent will actually answer with right now,
+    /// for display ("Ollama · qwen3:8b"). Purely cosmetic — the authoritative
+    /// resolution happens at generation time.
+    func resolvedModelDescription(for agent: Agent?) -> String {
+        let backend = agent?.backend ?? currentBackend
+        let model: String
+        if let pinned = agent?.modelID {
+            model = pinned
+        } else {
+            switch backend {
+            case .ollama: model = selectedOllamaModel
+            case .openAICompatible: model = selectedOpenAIModel
+            case .appleFoundationModels: model = "on-device"
+            case .none: model = "—"
+            }
+        }
+        switch backend {
+        case .appleFoundationModels: return "Apple Intelligence"
+        case .none: return "No backend"
+        default: return "\(backend.rawValue) · \(model)"
+        }
+    }
+
+    // MARK: - Model Management
+
+    /// Streams the download of an Ollama model (the in-app "pull").
+    func pullOllamaModel(_ name: String) -> AsyncThrowingStream<OllamaPullProgress, Error> {
+        ollamaService.pullModel(name)
+    }
+
+    /// Deletes a local Ollama model and refreshes the model list.
+    func deleteOllamaModel(_ name: String) async throws {
+        try await ollamaService.deleteModel(name)
+        await loadOllamaModels()
+    }
+
+    /// Refreshes the active backend's model list (after pulls/deletes).
+    func refreshModelList() async {
+        switch currentBackend {
+        case .ollama:
+            await loadOllamaModels()
+        case .openAICompatible:
+            if let service = openAIService { await loadOpenAIModels(service) }
+        case .appleFoundationModels, .none:
+            break
         }
     }
 

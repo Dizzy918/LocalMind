@@ -23,6 +23,21 @@ LocalMind connects to local AI backends running on your machine and provides a c
 - **Vision** — drag & drop or paste images for analysis (requires a vision model like LLaVA)
 - **File Attachments** — drop PDFs and text files directly into the chat
 - **Chat with Your Documents** — add PDFs/text files (or whole folders, via picker or drag-and-drop) to a local knowledge base; relevant passages are retrieved, **cited**, and grounded into answers. Embeds on-device via Apple's NaturalLanguage by default, or via Ollama's `nomic-embed-text` for higher-quality retrieval — nothing is uploaded
+- **Agents** — create reusable AI personas, each with its own instructions, pinned backend & model, creativity level, and tool/knowledge-base access; assign one per conversation. Ships with starter agents (Researcher, Coder, Writer, Critic)
+- **Agent Team** — send one prompt to up to 4 agents at once and watch them answer in parallel, side by side — even across different backends (Ollama next to Apple Intelligence); then synthesize their answers into one, or continue any answer as a normal chat
+- **Auto-Routing** — flip a conversation to "Auto" and each message is classified and routed to the best-fitting agent; every answer is labeled with the agent and model that produced it
+- **Debate Mode** — after a team run, agents read each other's answers, critique them, and revise over multiple rounds; an impartial moderator can declare a winner
+- **Background Generation** — switching conversations no longer cancels an answer; chats generate in parallel, with a spinner in the sidebar while streaming and an unread dot when a reply finished elsewhere
+- **Visible Reasoning** — thinking models' chain-of-thought streams into a collapsed 💭 disclosure instead of being discarded, with a live "Thinking…" state
+- **Smart Context** — messages are selected by token budget (not just count), and a rolling summary keeps the gist of older messages in context on long conversations
+- **Cross-Chat Memory** — opt-in recall of relevant exchanges from your other conversations, embedded and searched entirely on-device
+- **In-App Model Manager** — pull Ollama models with a progress bar, delete them, and browse any backend's catalogue without touching a terminal (Settings → Providers)
+- **Automation** — `localmind://ask?prompt=…&agent=Coder` starts an (agent-routed) chat from Shortcuts, scripts, or other apps
+- **Knowledge Collections** — group documents into named sets and point each agent at just the collections it needs
+- **Watched Folders** — point the knowledge base at a folder and its files are indexed and kept in sync automatically as they change on disk
+- **Per-Message Stats** — every answer shows the model, tokens/sec, and generation time
+- **Agent Import/Export** — share agent packs as JSON files (Settings → Agents)
+- **Per-Agent Tool Allowlists** — limit an agent to specific MCP tools, or disable tools for it entirely; pre-approved tools also work in team runs
 - **Per-Conversation Model & Temperature** — pin a specific model or creativity level for one chat without changing your global default
 - **Compare Models Side-by-Side** — regenerate any answer with another model and keep the one you prefer
 - **Conversation Branches** — editing or regenerating saves the previous version so you can restore it
@@ -175,12 +190,15 @@ LocalMind/
 │   ├── ChatMessage.swift       # Message model with image/file support
 │   ├── Conversation.swift      # Conversation model with emoji/title
 │   ├── AIParameters.swift      # Temperature, top-p, context settings
+│   ├── Agent.swift             # AI personas (prompt + model + capabilities)
 │   ├── CustomTool.swift        # User-defined AI tools
 │   ├── FocusSession.swift      # Focus timer sessions
 │   └── TaskItem.swift          # Task definitions
 ├── Services/
 │   ├── AIServiceProtocol.swift # Backend protocol + AIServiceError
-│   ├── AIServiceManager.swift  # Auto-detection, polling, model switching
+│   ├── AIServiceManager.swift  # Auto-detection, polling, cross-backend routing
+│   ├── ChatGenerationService.swift # Background generation, auto-routing, rolling summary
+│   ├── ChatMemoryStore.swift   # On-device cross-conversation memory
 │   ├── OllamaService.swift     # Ollama API client
 │   ├── OpenAICompatibleService.swift  # OpenAI-compatible API client
 │   ├── AppleFoundationModelService.swift  # Apple Intelligence
@@ -194,6 +212,8 @@ LocalMind/
 │   └── Components.swift        # Reusable UI components
 └── Views/
     ├── ChatView.swift          # Chat interface with streaming
+    ├── AgentTeamView.swift     # Run several agents on one prompt in parallel
+    ├── AgentSettingsView.swift # Create/edit/manage agents
     ├── SidebarView.swift       # Navigation + conversation history
     ├── SettingsView.swift      # Preferences panel
     ├── FocusTimerView.swift    # Pomodoro timer
@@ -218,6 +238,7 @@ All settings are available in the app's Settings panel (`Cmd + ,`):
 
 - **AI Backend** — choose preferred backend or let auto-detect decide
 - **Model Selection** — pick from available models on your server
+- **Agents** — create and manage AI personas; assign one from the chat header, or run several at once via "Ask multiple agents"
 - **System Prompt** — customize the default AI personality
 - **Temperature / Top-P** — tune generation parameters
 - **Context Limit** — control how many messages are sent as context
@@ -225,7 +246,7 @@ All settings are available in the app's Settings panel (`Cmd + ,`):
 
 ## Running Tests
 
-Unit tests live in `Tests/LocalMindTests/` and are already wired into the `LocalMind` scheme — no setup needed. See [Tests/README.md](Tests/README.md) for the file-by-file breakdown.
+Unit tests live in `Tests/LocalMindTests/` and UI smoke tests in `Tests/LocalMindUITests/` — both wired into the `LocalMind` scheme, no setup needed. See [Tests/README.md](Tests/README.md) for the file-by-file breakdown.
 
 ```bash
 xcodebuild test \

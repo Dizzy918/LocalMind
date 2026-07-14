@@ -65,6 +65,10 @@ struct Conversation: Identifiable, Codable, Sendable {
     var systemPromptOverride: String?  // Per-conversation prompt; nil falls back to the global default
     var modelOverride: String?         // Per-conversation model id; nil = use the globally selected model
     var temperatureOverride: Double?   // Per-conversation temperature; nil = use the global parameter
+    var agentID: UUID?                 // Assigned agent persona; nil = the default assistant
+    var autoRouteAgent: Bool = false   // Auto-pick the best agent for each message (overrides agentID)
+    var contextSummary: String?        // Rolling summary of messages that no longer fit the context window
+    var summarizedMessageCount: Int = 0 // How many leading messages contextSummary covers
     var branches: [ConversationBranch] = []  // Earlier versions, saved when the user edits/regenerates
     var profileID: UUID?               // Owning profile. nil = orphan (pre-profiles legacy data).
     let createdAt: Date
@@ -83,6 +87,7 @@ struct Conversation: Identifiable, Codable, Sendable {
         systemPromptOverride: String? = nil,
         modelOverride: String? = nil,
         temperatureOverride: Double? = nil,
+        agentID: UUID? = nil,
         profileID: UUID? = nil,
         createdAt: Date = Date()
     ) {
@@ -98,6 +103,7 @@ struct Conversation: Identifiable, Codable, Sendable {
         self.systemPromptOverride = systemPromptOverride
         self.modelOverride = modelOverride
         self.temperatureOverride = temperatureOverride
+        self.agentID = agentID
         self.profileID = profileID
         self.createdAt = createdAt
         self.updatedAt = createdAt
@@ -107,7 +113,8 @@ struct Conversation: Identifiable, Codable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id, title, messages, toolType, customToolID, customIconName, emoji
         case isPinned, isArchived, systemPromptOverride, profileID, createdAt, updatedAt
-        case modelOverride, temperatureOverride, branches
+        case modelOverride, temperatureOverride, branches, agentID, autoRouteAgent
+        case contextSummary, summarizedMessageCount
     }
 
     init(from decoder: Decoder) throws {
@@ -124,6 +131,10 @@ struct Conversation: Identifiable, Codable, Sendable {
         self.systemPromptOverride = try c.decodeIfPresent(String.self, forKey: .systemPromptOverride)
         self.modelOverride = try c.decodeIfPresent(String.self, forKey: .modelOverride)
         self.temperatureOverride = try c.decodeIfPresent(Double.self, forKey: .temperatureOverride)
+        self.agentID = try c.decodeIfPresent(UUID.self, forKey: .agentID)
+        self.autoRouteAgent = try c.decodeIfPresent(Bool.self, forKey: .autoRouteAgent) ?? false
+        self.contextSummary = try c.decodeIfPresent(String.self, forKey: .contextSummary)
+        self.summarizedMessageCount = try c.decodeIfPresent(Int.self, forKey: .summarizedMessageCount) ?? 0
         self.branches = try c.decodeIfPresent([ConversationBranch].self, forKey: .branches) ?? []
         self.profileID = try c.decodeIfPresent(UUID.self, forKey: .profileID)
         self.createdAt = try c.decode(Date.self, forKey: .createdAt)
@@ -144,6 +155,10 @@ struct Conversation: Identifiable, Codable, Sendable {
         try c.encodeIfPresent(systemPromptOverride, forKey: .systemPromptOverride)
         try c.encodeIfPresent(modelOverride, forKey: .modelOverride)
         try c.encodeIfPresent(temperatureOverride, forKey: .temperatureOverride)
+        try c.encodeIfPresent(agentID, forKey: .agentID)
+        if autoRouteAgent { try c.encode(autoRouteAgent, forKey: .autoRouteAgent) }
+        try c.encodeIfPresent(contextSummary, forKey: .contextSummary)
+        if summarizedMessageCount > 0 { try c.encode(summarizedMessageCount, forKey: .summarizedMessageCount) }
         if !branches.isEmpty { try c.encode(branches, forKey: .branches) }
         try c.encodeIfPresent(profileID, forKey: .profileID)
         try c.encode(createdAt, forKey: .createdAt)

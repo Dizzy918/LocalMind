@@ -194,6 +194,65 @@ actor OllamaService: AIServiceProtocol {
         }
     }
 
+    // MARK: - Model Management
+
+    /// Downloads a model from the Ollama registry, yielding progress as it
+    /// streams. Drives the in-app model manager so nobody needs a terminal.
+    nonisolated func pullModel(_ name: String) -> AsyncThrowingStream<OllamaPullProgress, Error> {
+        let baseURL = self.baseURL
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    var request = URLRequest(url: baseURL.appendingPathComponent("api/pull"))
+                    request.httpMethod = "POST"
+                    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    request.timeoutInterval = 3600 // large models take a while
+                    request.httpBody = try JSONSerialization.data(withJSONObject: [
+                        "model": name,
+                        "stream": true
+                    ])
+
+                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                    guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                        throw AIServiceError.serverError("Ollama pull failed (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0))")
+                    }
+
+                    for try await line in bytes.lines {
+                        if Task.isCancelled { break }
+                        guard let data = line.data(using: .utf8),
+                              let chunk = try? JSONDecoder().decode(OllamaPullChunk.self, from: data) else { continue }
+                        if let error = chunk.error {
+                            throw AIServiceError.serverError(error)
+                        }
+                        continuation.yield(OllamaPullProgress(
+                            status: chunk.status ?? "",
+                            completed: chunk.completed,
+                            total: chunk.total
+                        ))
+                        if chunk.status == "success" { break }
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// Removes a model from the local Ollama store.
+    func deleteModel(_ name: String) async throws {
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/delete"))
+        request.httpMethod = "DELETE"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // Newer Ollama expects "model", older releases used "name" — send both.
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["model": name, "name": name])
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw AIServiceError.serverError("Ollama couldn't delete '\(name)' (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0))")
+        }
+    }
+
     nonisolated func generateOnce(prompt: String, systemPrompt: String?, modelOverride: String?, parameters: AIParameters?, tools: [AITool]?) async throws -> String {
         var result = ""
         let messages = [ChatMessage(role: .user, content: prompt)]
@@ -251,6 +310,26 @@ nonisolated struct OllamaChatChunk: Decodable, Sendable {
             }
         }
     }
+}
+
+/// One progress tick of a model download.
+nonisolated struct OllamaPullProgress: Sendable {
+    let status: String
+    let completed: Int64?
+    let total: Int64?
+
+    /// 0…1 when the current layer reports sizes, else nil (status-only tick).
+    var fraction: Double? {
+        guard let completed, let total, total > 0 else { return nil }
+        return Double(completed) / Double(total)
+    }
+}
+
+private nonisolated struct OllamaPullChunk: Decodable, Sendable {
+    let status: String?
+    let completed: Int64?
+    let total: Int64?
+    let error: String?
 }
 
 nonisolated struct OllamaModel: Identifiable, Decodable, Sendable {

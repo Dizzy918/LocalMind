@@ -26,6 +26,7 @@ final class DataStore {
     private(set) var conversations: [Conversation] = []
     private(set) var focusSessions: [FocusSession] = []
     private(set) var customTools: [CustomTool] = []
+    private(set) var agents: [Agent] = []
 
     private let fileManager = FileManager.default
     let baseDirectory: URL
@@ -56,6 +57,7 @@ final class DataStore {
         loadAll()
         buildSearchIndex()
         adoptOrphansForExistingProfile()
+        seedDefaultAgentsIfNeeded()
     }
 
     /// Test-only initializer that lets the suite point at an isolated
@@ -85,7 +87,7 @@ final class DataStore {
     // MARK: - Directory Management
 
     private func ensureDirectories() {
-        let dirs = ["conversations", "focus_sessions", "custom_tools"]
+        let dirs = ["conversations", "focus_sessions", "custom_tools", "agents"]
         for dir in dirs {
             let path = baseDirectory.appendingPathComponent(dir, isDirectory: true)
             try? fileManager.createDirectory(at: path, withIntermediateDirectories: true)
@@ -205,6 +207,13 @@ final class DataStore {
         try? fileManager.removeItem(at: url)
         let compressedURL = url.deletingPathExtension().appendingPathExtension("json.gz")
         try? fileManager.removeItem(at: compressedURL)
+
+        // Deleting a chat must also delete what the memory index remembers of
+        // it — otherwise "deleted" conversations would keep resurfacing.
+        let deletedID = conversation.id
+        Task { @MainActor in
+            ChatMemoryStore.shared.forget(conversationID: deletedID)
+        }
     }
 
     /// Imports a JSON file produced by either `Export All` (an array of conversations)
@@ -451,6 +460,8 @@ final class DataStore {
 
         focusSessions = loadItems(from: "focus_sessions")
         customTools = loadItems(from: "custom_tools")
+        agents = loadItems(from: "agents")
+        agents.sort { $0.createdAt < $1.createdAt }
     }
 
     private func loadConversations() -> [Conversation] {
@@ -522,5 +533,90 @@ final class DataStore {
             .appendingPathComponent("custom_tools")
             .appendingPathComponent("\(tool.id).json")
         try? fileManager.removeItem(at: url)
+    }
+
+    // MARK: - Agents
+
+    func saveAgent(_ agent: Agent) {
+        if let index = agents.firstIndex(where: { $0.id == agent.id }) {
+            agents[index] = agent
+        } else {
+            agents.append(agent)
+        }
+
+        let url = agentURL(for: agent.id)
+        if let data = try? JSONEncoder().encode(agent) {
+            try? data.write(to: url)
+        }
+    }
+
+    func deleteAgent(_ agent: Agent) {
+        agents.removeAll { $0.id == agent.id }
+        try? fileManager.removeItem(at: agentURL(for: agent.id))
+    }
+
+    func agent(withID id: UUID?) -> Agent? {
+        guard let id else { return nil }
+        return agents.first { $0.id == id }
+    }
+
+    private func agentURL(for id: UUID) -> URL {
+        baseDirectory
+            .appendingPathComponent("agents")
+            .appendingPathComponent("\(id.uuidString).json")
+    }
+
+    /// All agents as a pretty-printed JSON array, for sharing.
+    func exportAgentsData() -> Data? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return try? encoder.encode(agents)
+    }
+
+    /// Imports agents from a JSON export (an array or a single agent).
+    /// Agents whose ID already exists are updated in place — so re-importing
+    /// an edited export round-trips — and everything else is added.
+    /// Returns how many agents were added or updated.
+    @discardableResult
+    func importAgents(from data: Data) -> Int {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        var imported: [Agent] = []
+        if let many = try? decoder.decode([Agent].self, from: data) {
+            imported = many
+        } else if let one = try? decoder.decode(Agent.self, from: data) {
+            imported = [one]
+        } else {
+            // Fall back to the default date strategy so files produced by
+            // JSONEncoder() without ISO dates also import.
+            let plain = JSONDecoder()
+            if let many = try? plain.decode([Agent].self, from: data) {
+                imported = many
+            } else if let one = try? plain.decode(Agent.self, from: data) {
+                imported = [one]
+            } else {
+                return 0
+            }
+        }
+
+        for agent in imported {
+            saveAgent(agent)
+        }
+        return imported.count
+    }
+
+    /// Seeds the starter personas exactly once, so the Agents feature isn't an
+    /// empty list on first discovery. The one-shot flag (not the list being
+    /// empty) is the guard: a user who deletes every agent shouldn't have the
+    /// defaults resurrect on next launch. Only called from the production
+    /// initializer — tests get a clean, unseeded store.
+    private func seedDefaultAgentsIfNeeded() {
+        let seedFlag = "didSeedDefaultAgents"
+        guard !UserDefaults.standard.bool(forKey: seedFlag), agents.isEmpty else { return }
+        for template in Agent.starterTemplates() {
+            saveAgent(template)
+        }
+        UserDefaults.standard.set(true, forKey: seedFlag)
     }
 }

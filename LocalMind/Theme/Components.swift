@@ -262,9 +262,28 @@ struct MessageBubble: View {
                             .font(AppTheme.Typography.caption)
                             .foregroundStyle(AppTheme.Colors.textTertiary)
                     } else {
-                        Text("LocalMind")
+                        // Attribution: the agent persona that answered, when one
+                        // did, plus the model — so multi-agent chats stay legible.
+                        Text(assistantLabel)
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                        if let model = message.modelUsed {
+                            Text(model)
+                                .font(AppTheme.Typography.captionSecondary)
+                                .foregroundStyle(AppTheme.Colors.textTertiary)
+                                .lineLimit(1)
+                                .help("Answered by \(model)")
+                        }
+
+                        if let tps = message.tokensPerSecond {
+                            Text(String(format: "%.1f tok/s", tps))
+                                .font(AppTheme.Typography.captionSecondary)
+                                .foregroundStyle(AppTheme.Colors.textTertiary)
+                                .help(message.generationSeconds.map {
+                                    String(format: "Generated in %.1fs", $0)
+                                } ?? "Generation speed")
+                        }
                     }
 
                     if isStreaming && !isUser {
@@ -274,6 +293,16 @@ struct MessageBubble: View {
                     if !isUser, let onSelectVariant, (message.variants?.count ?? 0) > 1 {
                         variantNavigator(onSelect: onSelectVariant)
                     }
+                }
+
+                // The model's chain-of-thought, collapsed by default. While the
+                // model is still thinking (streaming, no answer yet) the label
+                // pulses "Thinking…" so the wait is visibly productive.
+                if !isUser, let reasoning = message.reasoning, !reasoning.isEmpty {
+                    ReasoningDisclosure(
+                        reasoning: reasoning,
+                        isThinking: isStreaming && message.content.isEmpty
+                    )
                 }
 
                 // Message content
@@ -417,6 +446,11 @@ struct MessageBubble: View {
 
             if !isUser { Spacer(minLength: 80) }
         }
+        // The full row rect must count as hoverable — without this, hover only
+        // tracks rendered pixels, so crossing the transparent gap between the
+        // message text and the action bar dropped the hover and faded the bar
+        // out from under the cursor before it could be clicked.
+        .contentShape(Rectangle())
         .onHover { hovering in
             withAnimation(AppTheme.Animations.quick) { isHovered = hovering }
         }
@@ -474,6 +508,15 @@ struct MessageBubble: View {
         }
     }
 
+    /// "LocalMind" by default; "🔎 Researcher" when an agent answered.
+    private var assistantLabel: String {
+        guard let name = message.agentName else { return "LocalMind" }
+        if let emoji = message.agentEmoji {
+            return "\(emoji) \(name)"
+        }
+        return name
+    }
+
     private func displayContent(for message: ChatMessage) -> String {
         guard message.attachedFileName != nil else { return message.content }
         if let range = message.content.range(of: "\n\n📄 Attached file:") {
@@ -527,6 +570,53 @@ struct MessageBubble: View {
                     .background(Capsule().fill(AppTheme.Colors.backgroundSecondary))
                     .foregroundStyle(AppTheme.Colors.textSecondary)
                     .help(source.snippet)
+            }
+        }
+    }
+}
+
+/// Collapsed view of a thinking model's reasoning (<think> content).
+struct ReasoningDisclosure: View {
+    let reasoning: String
+    let isThinking: Bool
+
+    @State private var isExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
+            Button {
+                withAnimation(AppTheme.Animations.quick) { isExpanded.toggle() }
+            } label: {
+                HStack(spacing: 4) {
+                    Text("💭")
+                        .font(.system(size: 10))
+                    Text(isThinking ? "Thinking…" : "Reasoning")
+                        .font(.system(size: 11, weight: .medium))
+                    if isThinking {
+                        PulsingDot(size: 5)
+                    }
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 8, weight: .semibold))
+                }
+                .foregroundStyle(AppTheme.Colors.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .help(isExpanded ? "Hide the model's chain of thought" : "Show the model's chain of thought")
+
+            if isExpanded {
+                ScrollView {
+                    Text(reasoning)
+                        .font(AppTheme.Typography.captionSecondary)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
+                .frame(maxHeight: 180)
+                .padding(AppTheme.Spacing.sm)
+                .background {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(AppTheme.Colors.backgroundSecondary.opacity(0.6))
+                }
             }
         }
     }
@@ -742,8 +832,12 @@ struct ConversationRow: View {
     let conversation: Conversation
     let isSelected: Bool
     var isCompact: Bool = false
+    /// A background generation is streaming into this conversation right now.
+    var isGeneratingResponse: Bool = false
+    /// A generation finished here while the user was in another conversation.
+    var hasUnseenReply: Bool = false
     let action: () -> Void
-    
+
     @State private var isHovered = false
     
     var body: some View {
@@ -787,6 +881,16 @@ struct ConversationRow: View {
                     }
 
                     Spacer()
+
+                    if isGeneratingResponse {
+                        PulsingDot(size: 6)
+                            .help("Generating a response…")
+                    } else if hasUnseenReply {
+                        Circle()
+                            .fill(AppTheme.Colors.accentPrimary)
+                            .frame(width: 7, height: 7)
+                            .help("New reply ready")
+                    }
                 }
             }
             .padding(.horizontal, isCompact ? AppTheme.Spacing.xs : AppTheme.Spacing.md)

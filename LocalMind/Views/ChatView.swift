@@ -17,13 +17,21 @@ import WebKit
 struct ChatView: View {
     let aiManager: AIServiceManager
     let dataStore: DataStore
+    let generationService: ChatGenerationService
     @Binding var conversation: Conversation
-    
+
     @State private var inputText = ""
-    @State private var isStreaming = false
-    @State private var streamingContent = ""
-    @State private var currentStreamTask: Task<Void, Never>?
     @State private var scrollProxy: ScrollViewProxy?
+
+    /// Streaming state lives in the generation service (keyed by conversation
+    /// ID) so an in-flight answer survives switching conversations.
+    private var isStreaming: Bool {
+        generationService.isStreaming(conversation.id)
+    }
+
+    private var streamingContent: String {
+        generationService.streamingText(conversation.id)
+    }
     
     // Vision / Drop states
     @State private var attachedImageData: Data?
@@ -55,13 +63,14 @@ struct ChatView: View {
     // Conversation branches (versions saved on edit/regenerate)
     @State private var showingBranches = false
 
-    // Carry-over of earlier answers when re-rolling the latest turn into
-    // switchable per-turn variants.
-    @State private var pendingVariants: [String]?
-
     // Knowledge base ("chat with your documents")
     @State private var showingKnowledgeBase = false
     @AppStorage("useKnowledgeBase") private var useKnowledgeBase = false
+
+    // Agent Team — run several agents against one prompt in parallel
+    @State private var showingAgentTeam = false
+
+    @Environment(\.openSettings) private var openSettingsAction
 
     // One-time onboarding hint shown on the empty welcome screen.
     @AppStorage("hasSeenWelcomeHint") private var hasSeenWelcomeHint = false
@@ -167,8 +176,18 @@ struct ChatView: View {
         }
         .onAppear {
             restoreDraft()
+            generationService.markSeen(conversation.id)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 isInputFocused = true
+            }
+        }
+        .onChange(of: conversation.messages.count) { oldCount, newCount in
+            // A background generation just delivered into the visible chat.
+            generationService.markSeen(conversation.id)
+            if newCount > oldCount,
+               let last = conversation.messages.last, last.role == .assistant,
+               UserDefaults.standard.bool(forKey: "autoReadResponses") {
+                voiceManager.speak(text: last.content)
             }
         }
         .onChange(of: inputText) { _, newValue in
@@ -222,6 +241,102 @@ struct ChatView: View {
                 showingKnowledgeBase = false
             }
         }
+        .sheet(isPresented: $showingAgentTeam) {
+            AgentTeamView(
+                aiManager: aiManager,
+                dataStore: dataStore,
+                onClose: { showingAgentTeam = false }
+            )
+        }
+    }
+
+    // MARK: - Agents
+
+    /// The agent persona assigned to this conversation, if any.
+    private var currentAgent: Agent? {
+        dataStore.agent(withID: conversation.agentID)
+    }
+
+    /// Menu for assigning an agent to this conversation, launching the Agent
+    /// Team panel, or jumping to agent management in Settings.
+    private var agentPicker: some View {
+        Menu {
+            if dataStore.agents.count >= 2 {
+                Toggle(isOn: Binding(
+                    get: { conversation.autoRouteAgent },
+                    set: { enabled in
+                        conversation.autoRouteAgent = enabled
+                        conversation.updatedAt = Date()
+                    }
+                )) {
+                    Label("Auto — route each message to the best agent", systemImage: "sparkles")
+                }
+                Divider()
+            }
+
+            Picker("Agent", selection: Binding(
+                get: { conversation.agentID },
+                set: { newValue in
+                    conversation.agentID = newValue
+                    conversation.updatedAt = Date()
+                }
+            )) {
+                Text("Default assistant").tag(UUID?.none)
+                ForEach(dataStore.agents) { agent in
+                    Text("\(agent.emoji) \(agent.name)").tag(Optional(agent.id))
+                }
+            }
+            .pickerStyle(.inline)
+            .disabled(conversation.autoRouteAgent)
+
+            Divider()
+
+            Button {
+                showingAgentTeam = true
+            } label: {
+                Label("Ask multiple agents…", systemImage: "person.3")
+            }
+
+            Button {
+                UserDefaults.standard.set(SettingsView.SettingsTab.agents.rawValue,
+                                          forKey: SettingsView.deepLinkTabKey)
+                openSettingsAction()
+                #if os(macOS)
+                NSApp.activate()
+                #endif
+            } label: {
+                Label("Manage agents…", systemImage: "gearshape")
+            }
+        } label: {
+            HStack(spacing: 4) {
+                if conversation.autoRouteAgent {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 12))
+                        .foregroundStyle(AppTheme.Colors.accentPrimary)
+                    Text("Auto")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(AppTheme.Colors.accentPrimary)
+                } else if let agent = currentAgent {
+                    Text(agent.emoji)
+                        .font(.system(size: 12))
+                    Text(agent.name)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(AppTheme.Colors.accentPrimary)
+                        .lineLimit(1)
+                } else {
+                    Image(systemName: "person.crop.circle.dashed")
+                        .font(.system(size: 14))
+                        .foregroundStyle(AppTheme.Colors.textTertiary)
+                }
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(conversation.autoRouteAgent
+              ? "Each message is routed to the best-fitting agent"
+              : (currentAgent.map { "\($0.name) is answering this conversation — \(aiManager.resolvedModelDescription(for: $0))" }
+                 ?? "Assign an agent to this conversation"))
     }
 
     // MARK: - Chat Header
@@ -268,6 +383,9 @@ struct ChatView: View {
                     branchListPopover
                 }
             }
+
+            // Agent persona for this conversation.
+            agentPicker
 
             // Knowledge base — "chat with your documents". Filled when active.
             Button {
@@ -366,7 +484,9 @@ struct ChatView: View {
     /// plus char/4 for non-word characters (punctuation, code symbols).
     /// Matches GPT-style BPE counts within ~10% for both prose and code.
     private var tokenCountLabel: String {
-        let full = conversation.messages.map(\.content).joined(separator: " ")
+        // Strip hidden <think> blocks (present in messages saved by older
+        // builds) so the count reflects what the user actually sees.
+        let full = conversation.messages.map(\.content).joined(separator: " ").strippingThinkBlocks
         let tokens = TokenEstimator.estimate(full)
         if tokens >= 1000 {
             return "\(String(format: "%.1f", Double(tokens) / 1000))k tokens"
@@ -550,7 +670,7 @@ struct ChatView: View {
 
                     if isStreaming && !streamingContent.isEmpty {
                         MessageBubble(
-                            message: ChatMessage(role: .assistant, content: streamingContent),
+                            message: streamingPreviewMessage,
                             isStreaming: true,
                             onPlay: { voiceManager.speak(text: streamingContent) }
                         )
@@ -581,6 +701,20 @@ struct ChatView: View {
             .onChange(of: streamingContent) { _, _ in scrollToBottom(proxy: proxy) }
         }
     }
+
+    /// The in-progress answer as a message, carrying the answering agent's
+    /// attribution so the streaming bubble is labeled like the final one.
+    /// Reasoning is split out live, so while the model is still inside a
+    /// <think> block the bubble shows a "Thinking…" disclosure, not raw tags.
+    private var streamingPreviewMessage: ChatMessage {
+        let (reasoning, answer) = streamingContent.separatingThinkBlocks
+        var message = ChatMessage(role: .assistant, content: answer)
+        message.reasoning = reasoning
+        let attribution = generationService.liveAttribution(conversation.id)
+        message.agentName = attribution.name
+        message.agentEmoji = attribution.emoji
+        return message
+    }
     
     // MARK: - Welcome Layout (centered input like ChatGPT/Claude)
 
@@ -604,6 +738,23 @@ struct ChatView: View {
                 }
 
                 inputBar
+
+                // Agent controls for a brand-new chat (the header, which
+                // normally hosts these, only appears once messages exist).
+                HStack(spacing: AppTheme.Spacing.md) {
+                    agentPicker
+                    if !dataStore.agents.isEmpty {
+                        Button {
+                            showingAgentTeam = true
+                        } label: {
+                            Label("Ask multiple agents", systemImage: "person.3")
+                                .font(AppTheme.Typography.caption)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(AppTheme.Colors.textTertiary)
+                        .help("Send one prompt to several agents in parallel")
+                    }
+                }
             }
 
             Spacer()
@@ -876,10 +1027,8 @@ struct ChatView: View {
             generateEmojiIfNeeded()
             generateTitleIfNeeded()
         }
-        
-        currentStreamTask = Task {
-            await generateResponse()
-        }
+
+        generationService.start(conversationID: conversation.id)
     }
     
     /// Asks the AI to generate a title for the conversation
@@ -987,159 +1136,6 @@ struct ChatView: View {
         return nil
     }
     
-    /// Builds the effective system prompt: global default (or custom-tool
-    /// prompt), overridden per-conversation, with the active profile's Personal
-    /// Context prepended. Shared by the main generation and the compare view so
-    /// an alternative answer is produced under identical conditions.
-    private func resolvedSystemPrompt() -> String {
-        let fallback = "You are LocalMind, a helpful, concise AI assistant. Provide clear, actionable responses. Use markdown formatting when appropriate."
-        var systemPrompt = UserDefaults.standard.string(forKey: "defaultSystemPrompt") ?? fallback
-        if systemPrompt.isEmpty { systemPrompt = fallback }
-
-        if let customToolID = conversation.customToolID,
-           let customTool = dataStore.customTools.first(where: { $0.id == customToolID }) {
-            systemPrompt = customTool.systemPrompt
-        }
-
-        // Per-conversation override wins over both global default and custom tool.
-        if let override = conversation.systemPromptOverride, !override.isEmpty {
-            systemPrompt = override
-        }
-
-        // Prepend the active profile's Personal Context — the user's portable,
-        // cross-provider memory the AI should know on every chat.
-        let personalContext = ProfileStore.currentPersonalContext()
-        if !personalContext.isEmpty {
-            systemPrompt = personalContext + "\n\n---\n\n" + systemPrompt
-        }
-        return systemPrompt
-    }
-
-    private func generateResponse(modelOverride oneShotModel: String? = nil) async {
-        guard let service = aiManager.currentService else {
-            let errorMsg = ChatMessage(role: .assistant, content: "⚠️ \(AIServiceError.noBackendAvailable.localizedDescription)\n\n💡 \(AIServiceError.noBackendAvailable.recoverySuggestion ?? "")")
-            conversation.messages.append(errorMsg)
-            dataStore.saveConversation(conversation)
-            return
-        }
-        
-        isStreaming = true
-        streamingContent = ""
-
-        var systemPrompt = resolvedSystemPrompt()
-
-        // Retrieval-augmented generation: when the user has enabled their
-        // document store, pull the most relevant chunks for the latest question
-        // and prepend them so the model can ground its answer in those docs.
-        var retrievedSources: [MessageSource] = []
-        if useKnowledgeBase,
-           let lastUserMessage = conversation.messages.last(where: { $0.role == .user })?.content {
-            let hits = await KnowledgeBaseStore.shared.retrieve(lastUserMessage)
-            if !hits.isEmpty {
-                let excerpts = hits.enumerated()
-                    .map { "[\($0.offset + 1)] (\($0.element.documentName)) \($0.element.text)" }
-                    .joined(separator: "\n\n")
-                systemPrompt = """
-                The user has shared personal documents. Use the excerpts below to answer when they're relevant, and say so plainly if they don't contain the answer. Don't invent details they don't support.
-
-                <documents>
-                \(excerpts)
-                </documents>
-
-                \(systemPrompt)
-                """
-                retrievedSources = hits.map {
-                    MessageSource(documentName: $0.documentName, snippet: String($0.text.prefix(180)))
-                }
-            }
-        }
-
-        // Apply context limit
-        let contextLimit = UserDefaults.standard.integer(forKey: "contextMessageLimit")
-        let limit = contextLimit > 0 ? contextLimit : 10
-        let recentMessages = Array(conversation.messages.suffix(limit))
-
-        // Per-conversation overrides layer on top of the global settings. A
-        // one-shot model (used by "regenerate with another model") wins over
-        // the conversation's pinned model.
-        let effectiveModel = oneShotModel ?? conversation.modelOverride
-        var effectiveParameters = aiManager.aiParameters
-        if let temperature = conversation.temperatureOverride {
-            effectiveParameters.temperature = temperature
-        }
-
-        do {
-            let availableTools = aiManager.getAvailableTools()
-            let tools = availableTools.isEmpty ? nil : availableTools
-            var pendingToolCalls: [AIToolCall] = []
-            for try await chunk in service.streamChat(messages: recentMessages, systemPrompt: systemPrompt, modelOverride: effectiveModel, parameters: effectiveParameters, tools: tools) {
-                if Task.isCancelled { break }
-                switch chunk {
-                case .text(let text):
-                    streamingContent += text
-                case .toolCall(let call):
-                    pendingToolCalls.append(call)
-                case .toolCalls(let calls):
-                    pendingToolCalls.append(contentsOf: calls)
-                case .done:
-                    break
-                }
-            }
-            // Everything past the stream loop must be gated on cancellation.
-            // stopStreaming() handles the partial-message append and clears
-            // streamingContent itself; if a late chunk slips in after that
-            // clear and re-populates streamingContent, this guard stops us from
-            // appending a second, orphaned assistant message (and from running
-            // tools for a generation the user already cancelled).
-            if !Task.isCancelled {
-                if !pendingToolCalls.isEmpty {
-                    await aiManager.executeToolCalls(pendingToolCalls) { name, result in
-                        streamingContent += "\n\n_🔧 \(name): \(result)_"
-                    }
-                }
-
-                if !streamingContent.isEmpty {
-                    var assistantMessage = ChatMessage(role: .assistant, content: streamingContent)
-                    if !retrievedSources.isEmpty {
-                        assistantMessage.sources = retrievedSources
-                    }
-                    // If this generation re-rolled the previous answer, keep the
-                    // earlier answer(s) as switchable variants of this turn.
-                    if let pending = pendingVariants {
-                        assistantMessage.variants = pending + [streamingContent]
-                        assistantMessage.activeVariantIndex = pending.count
-                    }
-                    pendingVariants = nil
-                    conversation.messages.append(assistantMessage)
-                    conversation.updatedAt = Date()
-                    dataStore.saveConversation(conversation)
-
-                    if UserDefaults.standard.bool(forKey: "autoReadResponses") {
-                        voiceManager.speak(text: assistantMessage.content)
-                    }
-                }
-            }
-        } catch {
-            if !Task.isCancelled {
-                let description: String
-                if let serviceError = error as? AIServiceError {
-                    description = "⚠️ \(serviceError.localizedDescription)\n\n💡 \(serviceError.recoverySuggestion ?? "")"
-                } else if (error as NSError).code == NSURLErrorTimedOut {
-                    let timeout = AIServiceError.timeout
-                    description = "⚠️ \(timeout.localizedDescription)\n\n💡 \(timeout.recoverySuggestion ?? "")"
-                } else {
-                    description = "⚠️ Error: \(error.localizedDescription)"
-                }
-                let errorMsg = ChatMessage(role: .assistant, content: description)
-                conversation.messages.append(errorMsg)
-                dataStore.saveConversation(conversation)
-            }
-        }
-        
-        streamingContent = ""
-        isStreaming = false
-    }
-    
     // MARK: - Message Actions
 
     /// Delete a single message from the conversation.
@@ -1167,7 +1163,7 @@ struct ChatView: View {
         conversation.updatedAt = Date()
         dataStore.saveConversation(conversation)
 
-        currentStreamTask = Task { await generateResponse() }
+        generationService.start(conversationID: conversation.id)
     }
 
     /// Regenerate an AI response: remove the AI message (and anything after it) and re-prompt.
@@ -1176,10 +1172,11 @@ struct ChatView: View {
 
         if isStreaming { stopStreaming() }
 
+        var carryVariants: [String]?
         if index == conversation.messages.count - 1 {
             // Re-rolling the latest answer: keep the existing answer(s) as
             // switchable variants of this turn (the ‹ i/n › navigator).
-            pendingVariants = message.variants ?? [message.content]
+            carryVariants = message.variants ?? [message.content]
             conversation.messages = Array(conversation.messages[..<index])
         } else {
             // Mid-conversation: the tail below would be invalidated, so snapshot
@@ -1190,7 +1187,7 @@ struct ChatView: View {
         conversation.updatedAt = Date()
         dataStore.saveConversation(conversation)
 
-        currentStreamTask = Task { await generateResponse() }
+        generationService.start(conversationID: conversation.id, carryVariants: carryVariants)
     }
 
     /// Switch which stored variant of an assistant turn is displayed.
@@ -1250,28 +1247,13 @@ struct ChatView: View {
         comparison = ModelComparisonRequest(
             messageID: message.id,
             contextMessages: context,
-            systemPrompt: resolvedSystemPrompt(),
+            systemPrompt: generationService.resolvedSystemPrompt(for: conversation, agent: currentAgent),
             originalContent: message.content
         )
     }
 
     private func stopStreaming() {
-        currentStreamTask?.cancel()
-        
-        if !streamingContent.isEmpty {
-            var partialMessage = ChatMessage(role: .assistant, content: streamingContent + "\n\n*[Generation stopped]*")
-            if let pending = pendingVariants {
-                partialMessage.variants = pending + [partialMessage.content]
-                partialMessage.activeVariantIndex = pending.count
-            }
-            conversation.messages.append(partialMessage)
-            conversation.updatedAt = Date()
-            dataStore.saveConversation(conversation)
-        }
-        pendingVariants = nil
-
-        streamingContent = ""
-        isStreaming = false
+        generationService.stop(conversationID: conversation.id)
     }
     
     private func scrollToBottom(proxy: ScrollViewProxy) {

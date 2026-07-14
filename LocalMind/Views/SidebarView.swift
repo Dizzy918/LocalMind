@@ -22,6 +22,7 @@ struct SidebarView: View {
     let dataStore: DataStore
     let aiManager: AIServiceManager
     let profileStore: ProfileStore
+    let generationService: ChatGenerationService
     let onNewConversation: () -> Void
 
     @Environment(\.openSettings) private var openSettingsAction
@@ -271,7 +272,9 @@ struct SidebarView: View {
                                 ConversationRow(
                                     conversation: conversation,
                                     isSelected: selectedConversationID == conversation.id,
-                                    isCompact: isCompact
+                                    isCompact: isCompact,
+                                    isGeneratingResponse: generationService.isStreaming(conversation.id),
+                                    hasUnseenReply: generationService.hasUnseenReply(conversation.id)
                                 ) {
                                     withAnimation(AppTheme.Animations.quick) {
                                         selectedConversationID = conversation.id

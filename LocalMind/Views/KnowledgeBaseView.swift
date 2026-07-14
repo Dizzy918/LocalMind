@@ -20,12 +20,16 @@ struct KnowledgeBaseView: View {
     @AppStorage("embeddingProvider") private var embeddingProvider = "apple"
     @State private var importError: String?
     @State private var isDropTargeted = false
+    // "New collection…" prompt state: which document it's for + the name field.
+    @State private var collectionPromptDocument: KnowledgeDocument?
+    @State private var newCollectionName = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
             header
             toggleRow
             embedderRow
+            watchedFoldersRow
             Divider()
 
             if store.documents.isEmpty {
@@ -52,6 +56,83 @@ struct KnowledgeBaseView: View {
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
             handleDrop(providers)
         }
+        .alert("New Collection", isPresented: Binding(
+            get: { collectionPromptDocument != nil },
+            set: { if !$0 { collectionPromptDocument = nil } }
+        )) {
+            TextField("Collection name", text: $newCollectionName)
+            Button("Cancel", role: .cancel) { collectionPromptDocument = nil }
+            Button("Create") {
+                if let document = collectionPromptDocument {
+                    store.setCollection(newCollectionName, for: document)
+                }
+                collectionPromptDocument = nil
+            }
+        } message: {
+            Text("Group documents so agents can retrieve from just this set.")
+        }
+    }
+
+    // MARK: - Watched Folders
+
+    /// Folders whose files are auto-indexed and kept in sync via FSEvents.
+    /// Each folder's documents land in a collection named after it.
+    private var watchedFoldersRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: AppTheme.Spacing.sm) {
+                Image(systemName: "folder.badge.gearshape")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                Text(store.watchedFolders.isEmpty
+                     ? "Watch a folder to keep its files indexed automatically"
+                     : "Watched folders")
+                    .font(AppTheme.Typography.captionSecondary)
+                    .foregroundStyle(.secondary)
+                if store.isSyncing {
+                    ProgressView().controlSize(.mini)
+                }
+                Spacer()
+                Button("Watch folder…") { pickWatchedFolder() }
+                    .controlSize(.small)
+                    .disabled(!store.isAvailable)
+            }
+            ForEach(store.watchedFolders, id: \.self) { folder in
+                HStack(spacing: AppTheme.Spacing.sm) {
+                    Image(systemName: "folder")
+                        .font(.system(size: 10))
+                        .foregroundStyle(AppTheme.Colors.accentPrimary)
+                    Text(URL(fileURLWithPath: folder).lastPathComponent)
+                        .font(AppTheme.Typography.captionSecondary)
+                        .help(folder)
+                    Spacer()
+                    Button {
+                        store.removeWatchedFolder(folder)
+                    } label: {
+                        Image(systemName: "xmark.circle").font(.system(size: 10))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Stop watching and remove its documents")
+                }
+                .padding(.leading, AppTheme.Spacing.lg)
+            }
+        }
+    }
+
+    private func pickWatchedFolder() {
+        #if os(macOS)
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.title = "Watch a folder"
+        panel.message = "Supported files in this folder are indexed now and kept in sync as they change."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task {
+            await store.addWatchedFolder(url)
+            useKnowledgeBase = true
+        }
+        #endif
     }
 
     private var header: some View {
@@ -166,10 +247,26 @@ struct KnowledgeBaseView: View {
                             .foregroundStyle(AppTheme.Colors.accentPrimary)
                             .frame(width: 20)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(document.name)
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(AppTheme.Colors.textPrimary)
-                                .lineLimit(1)
+                            HStack(spacing: 6) {
+                                Text(document.name)
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                                    .lineLimit(1)
+                                if let collection = document.collection {
+                                    Text(collection)
+                                        .font(.system(size: 9, weight: .medium))
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 1)
+                                        .background(Capsule().fill(AppTheme.Colors.accentPrimary.opacity(0.15)))
+                                        .foregroundStyle(AppTheme.Colors.accentPrimary)
+                                }
+                                if document.sourcePath != nil {
+                                    Image(systemName: "folder.badge.gearshape")
+                                        .font(.system(size: 9))
+                                        .foregroundStyle(AppTheme.Colors.textTertiary)
+                                        .help("Synced from a watched folder")
+                                }
+                            }
                             Text("\(document.chunkCount) chunks · added \(document.addedAt.formatted(date: .abbreviated, time: .omitted))")
                                 .font(AppTheme.Typography.captionSecondary)
                                 .foregroundStyle(.secondary)
@@ -189,6 +286,22 @@ struct KnowledgeBaseView: View {
                         RoundedRectangle(cornerRadius: 6)
                             .fill(AppTheme.Colors.backgroundSecondary.opacity(0.5))
                     )
+                    .contextMenu {
+                        Menu("Move to collection") {
+                            ForEach(store.collections, id: \.self) { collection in
+                                Button(collection) { store.setCollection(collection, for: document) }
+                            }
+                            if !store.collections.isEmpty { Divider() }
+                            Button("New collection…") {
+                                newCollectionName = ""
+                                collectionPromptDocument = document
+                            }
+                            if document.collection != nil {
+                                Divider()
+                                Button("Remove from collection") { store.setCollection(nil, for: document) }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -211,7 +324,7 @@ struct KnowledgeBaseView: View {
     /// supported file is extracted and indexed, with a summary of any failures.
     private func importURLs(_ urls: [URL]) {
         importError = nil
-        let files = Self.collectSupportedFiles(from: urls)
+        let files = DocumentImporter.collectSupportedFiles(from: urls)
         guard !files.isEmpty else {
             importError = "No PDFs or text files found in that selection."
             return
@@ -220,7 +333,7 @@ struct KnowledgeBaseView: View {
             var failures: [String] = []
             var anyAdded = false
             for url in files {
-                guard let text = Self.extractText(from: url),
+                guard let text = DocumentImporter.extractText(from: url),
                       !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                       await store.addDocument(name: url.lastPathComponent, text: text) > 0 else {
                     failures.append(url.lastPathComponent)
@@ -258,39 +371,4 @@ struct KnowledgeBaseView: View {
         return true
     }
 
-    private static let supportedExtensions: Set<String> =
-        ["pdf", "txt", "md", "markdown", "text", "csv", "tsv", "json", "log", "rtf"]
-
-    /// Flattens a selection of files and folders into supported document URLs.
-    static func collectSupportedFiles(from urls: [URL]) -> [URL] {
-        let fm = FileManager.default
-        var result: [URL] = []
-        for url in urls {
-            var isDir: ObjCBool = false
-            guard fm.fileExists(atPath: url.path, isDirectory: &isDir) else { continue }
-            if isDir.boolValue {
-                if let enumerator = fm.enumerator(at: url, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
-                    for case let file as URL in enumerator
-                    where supportedExtensions.contains(file.pathExtension.lowercased()) {
-                        result.append(file)
-                    }
-                }
-            } else if supportedExtensions.contains(url.pathExtension.lowercased()) {
-                result.append(url)
-            }
-        }
-        return result
-    }
-
-    static func extractText(from url: URL) -> String? {
-        #if os(macOS)
-        if url.pathExtension.lowercased() == "pdf" {
-            guard let document = PDFDocument(url: url) else { return nil }
-            return (0..<document.pageCount)
-                .compactMap { document.page(at: $0)?.string }
-                .joined(separator: "\n")
-        }
-        #endif
-        return try? String(contentsOf: url, encoding: .utf8)
-    }
 }

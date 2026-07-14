@@ -98,6 +98,17 @@ final class MCPService {
     /// How many tools the user has granted standing "always allow" approval to.
     var approvedToolCount: Int { autoApprovedTools.count }
 
+    /// Names of connected tools that will execute without an approval prompt —
+    /// either the global approval requirement is off, or the user granted the
+    /// tool standing approval. Team runs only expose these, so four agents
+    /// can't race each other through one approval dialog.
+    var toolNamesNotRequiringApproval: [String] {
+        let requireApproval = UserDefaults.standard.object(forKey: "mcpRequireApproval") as? Bool ?? true
+        let names = availableTools.map(\.name)
+        if !requireApproval { return names }
+        return names.filter { autoApprovedTools.contains($0) }
+    }
+
     /// Revoke every standing approval so each tool must be confirmed again.
     func resetApprovedTools() {
         autoApprovedTools.removeAll()

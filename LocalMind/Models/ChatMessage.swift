@@ -42,6 +42,20 @@ nonisolated struct ChatMessage: Identifiable, Codable, Sendable {
     var variants: [String]?
     var activeVariantIndex: Int?
 
+    // Attribution: which persona/model produced an assistant message. Shown
+    // as a small caption on the bubble so multi-agent chats stay legible.
+    var agentName: String?
+    var agentEmoji: String?
+    var modelUsed: String?
+
+    /// The model's chain-of-thought (<think> blocks), kept separate from the
+    /// answer and shown in a collapsed disclosure. nil = no reasoning emitted.
+    var reasoning: String?
+
+    // Performance stats for assistant messages.
+    var generationSeconds: Double?
+    var tokensPerSecond: Double?
+
     init(id: UUID = UUID(), role: MessageRole, content: String, imageData: Data? = nil, attachedFileName: String? = nil, attachedFileContent: String? = nil, timestamp: Date = Date()) {
         self.id = id
         self.role = role
@@ -50,5 +64,42 @@ nonisolated struct ChatMessage: Identifiable, Codable, Sendable {
         self.attachedFileName = attachedFileName
         self.attachedFileContent = attachedFileContent
         self.timestamp = timestamp
+    }
+}
+
+extension String {
+    /// Splits `<think>…</think>` reasoning blocks (emitted inline by thinking
+    /// models like qwen3 and deepseek-r1) away from the visible answer.
+    ///
+    /// Returns the joined contents of all think blocks as `reasoning` (nil if
+    /// none) and everything outside them as `answer`. An unterminated
+    /// `<think>` counts its tail as reasoning — that's the live-streaming
+    /// state while the model is still thinking.
+    var separatingThinkBlocks: (reasoning: String?, answer: String) {
+        guard contains("<think>") else { return (nil, self) }
+        var answer = ""
+        var reasoningParts: [String] = []
+        var rest = self[...]
+        while let open = rest.range(of: "<think>") {
+            answer += rest[rest.startIndex..<open.lowerBound]
+            if let close = rest.range(of: "</think>", range: open.upperBound..<rest.endIndex) {
+                reasoningParts.append(String(rest[open.upperBound..<close.lowerBound]))
+                rest = rest[close.upperBound...]
+            } else {
+                reasoningParts.append(String(rest[open.upperBound...]))
+                rest = rest[rest.endIndex...]
+                break
+            }
+        }
+        answer += rest
+        let reasoning = reasoningParts.joined(separator: "\n\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (reasoning.isEmpty ? nil : reasoning,
+                answer.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// The visible answer with all reasoning blocks removed.
+    var strippingThinkBlocks: String {
+        separatingThinkBlocks.answer
     }
 }

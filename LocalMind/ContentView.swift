@@ -14,6 +14,7 @@ struct ContentView: View {
     let aiManager: AIServiceManager
     let dataStore: DataStore
     let profileStore: ProfileStore
+    let generationService: ChatGenerationService
 
     @State private var selectedSelection: SidebarSelection = .chat
     @State private var selectedConversationID: UUID?
@@ -54,6 +55,7 @@ struct ContentView: View {
                 dataStore: dataStore,
                 aiManager: aiManager,
                 profileStore: profileStore,
+                generationService: generationService,
                 onNewConversation: startNewConversation
             )
             .frame(width: CGFloat(liveSidebarWidth))
@@ -134,6 +136,13 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .newConversation)) { _ in
             startNewConversation()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .openConversation)) { note in
+            // The Agent Team panel saves a run as a conversation and asks us
+            // to show it so the user can keep talking to that agent.
+            guard let id = note.object as? UUID else { return }
+            selectedSelection = .chat
+            selectedConversationID = id
+        }
     }
     
     @State private var draftConversation: Conversation?
@@ -153,6 +162,7 @@ struct ContentView: View {
             ChatView(
                 aiManager: aiManager,
                 dataStore: dataStore,
+                generationService: generationService,
                 conversation: bindingForConversation(id)
             )
             .id(id)

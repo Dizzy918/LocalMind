@@ -42,7 +42,7 @@ struct AIToolResult: Codable, Sendable, Identifiable {
  // MARK: - AI Backend
 
 /// Represents the available AI backends that the app can connect to.
-enum AIBackend: String, Sendable, CaseIterable {
+enum AIBackend: String, Sendable, CaseIterable, Codable {
     case appleFoundationModels = "Apple Intelligence"
     case ollama = "Ollama"
     case openAICompatible = "OpenAI Compatible"

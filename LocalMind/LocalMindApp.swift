@@ -10,12 +10,16 @@ import SwiftUI
 extension Notification.Name {
     /// Posted by the ⌘N menu command; ContentView starts a fresh conversation.
     static let newConversation = Notification.Name("LocalMind.newConversation")
+    /// Posted with a conversation UUID as the object; ContentView selects it.
+    /// Used by the Agent Team panel's "Open as chat" to hand off a saved run.
+    static let openConversation = Notification.Name("LocalMind.openConversation")
 }
 
 @main
 struct LocalMindApp: App {
-    @State private var sharedAIManager = AIServiceManager()
-    @State private var sharedDataStore = DataStore()
+    @State private var sharedAIManager: AIServiceManager
+    @State private var sharedDataStore: DataStore
+    @State private var sharedGenerationService: ChatGenerationService
     @State private var sharedProfileStore = ProfileStore()
     @State private var sharedMCPService: MCPService?
     @AppStorage("isDarkMode") private var isDarkMode: Bool = true
@@ -27,6 +31,60 @@ struct LocalMindApp: App {
         UserDefaults.standard.register(defaults: ["isDarkMode": true])
         let isDark = UserDefaults.standard.bool(forKey: "isDarkMode")
         NSApplication.shared.appearance = NSAppearance(named: isDark ? .darkAqua : .aqua)
+
+        // The generation service outlives any single view so answers keep
+        // streaming when the user switches conversations — it needs the same
+        // store/manager instances the views get.
+        let aiManager = AIServiceManager()
+        let dataStore = DataStore()
+        _sharedAIManager = State(initialValue: aiManager)
+        _sharedDataStore = State(initialValue: dataStore)
+        _sharedGenerationService = State(initialValue: ChatGenerationService(dataStore: dataStore, aiManager: aiManager))
+    }
+
+    /// Handles localmind:// URLs — the app's automation surface (Shortcuts,
+    /// scripts, other apps). Supported:
+    ///   localmind://new                          — start a blank conversation
+    ///   localmind://ask?prompt=…&agent=Coder     — ask (optionally via an agent)
+    private func handleIncomingURL(_ url: URL) {
+        guard url.scheme?.lowercased() == "localmind",
+              sharedProfileStore.isSignedIn else { return }
+
+        let queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        func value(_ name: String) -> String? {
+            queryItems.first { $0.name == name }?.value
+        }
+
+        NSApp.activate(ignoringOtherApps: true)
+
+        switch url.host?.lowercased() ?? "ask" {
+        case "new":
+            NotificationCenter.default.post(name: .newConversation, object: nil)
+
+        case "ask":
+            let prompt = (value("prompt") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !prompt.isEmpty else {
+                NotificationCenter.default.post(name: .newConversation, object: nil)
+                return
+            }
+            var conversation = Conversation(
+                title: String(prompt.prefix(50)) + (prompt.count > 50 ? "..." : ""),
+                messages: [ChatMessage(role: .user, content: prompt)]
+            )
+            if let agentName = value("agent"),
+               let agent = sharedDataStore.agents.first(where: {
+                   $0.name.caseInsensitiveCompare(agentName) == .orderedSame
+               }) {
+                conversation.agentID = agent.id
+                conversation.emoji = agent.emoji
+            }
+            sharedDataStore.saveConversation(conversation)
+            NotificationCenter.default.post(name: .openConversation, object: conversation.id)
+            sharedGenerationService.start(conversationID: conversation.id)
+
+        default:
+            break
+        }
     }
     
     var body: some Scene {
@@ -36,7 +94,8 @@ struct LocalMindApp: App {
                     ContentView(
                         aiManager: sharedAIManager,
                         dataStore: sharedDataStore,
-                        profileStore: sharedProfileStore
+                        profileStore: sharedProfileStore,
+                        generationService: sharedGenerationService
                     )
                 } else {
                     SignInView(profileStore: sharedProfileStore)
@@ -45,8 +104,17 @@ struct LocalMindApp: App {
                 .frame(minWidth: AppTheme.Dimensions.minWindowWidth, minHeight: AppTheme.Dimensions.minWindowHeight)
                 .background(AppTheme.Colors.backgroundPrimary)
                 .preferredColorScheme(isDarkMode ? .dark : .light)
+                .onOpenURL { url in
+                    handleIncomingURL(url)
+                }
                 .onAppear {
                     applyAppearance(isDarkMode)
+                    // UI-test hook: land signed in as a guest so smoke tests
+                    // skip the sign-in screen on fresh machines.
+                    if CommandLine.arguments.contains("--uitest-autosignin"),
+                       !sharedProfileStore.isSignedIn {
+                        _ = sharedProfileStore.createProfile(displayName: "UI Test", email: "", method: .guest)
+                    }
                     let mcpService = MCPService(dataStore: sharedDataStore)
                     sharedMCPService = mcpService
                     sharedAIManager.setMCPService(mcpService)
@@ -57,6 +125,13 @@ struct LocalMindApp: App {
                     let dataStoreRef = sharedDataStore
                     sharedProfileStore.onFirstProfileCreated = { firstProfileID in
                         dataStoreRef.claimOrphanConversations(forProfile: firstProfileID)
+                    }
+
+                    // Catch up the cross-conversation memory index with chats
+                    // that changed while the feature was off or the app closed.
+                    if ChatMemoryStore.isEnabled {
+                        let conversations = sharedDataStore.conversations
+                        Task { await ChatMemoryStore.shared.syncAll(conversations) }
                     }
 
                     HotkeyManager.shared.onHotkeyPressed = {
