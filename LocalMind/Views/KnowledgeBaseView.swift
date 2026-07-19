@@ -23,6 +23,20 @@ struct KnowledgeBaseView: View {
     // "New collection…" prompt state: which document it's for + the name field.
     @State private var collectionPromptDocument: KnowledgeDocument?
     @State private var newCollectionName = ""
+    @State private var documentFilter = ""
+
+    /// Documents shown in the list: filtered by the search field (name or
+    /// collection, case-insensitive) and sorted newest-first so recent imports
+    /// are visible without scrolling.
+    private var visibleDocuments: [KnowledgeDocument] {
+        let sorted = store.documents.sorted { $0.addedAt > $1.addedAt }
+        let query = documentFilter.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !query.isEmpty else { return sorted }
+        return sorted.filter {
+            $0.name.lowercased().contains(query)
+                || ($0.collection?.lowercased().contains(query) ?? false)
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
@@ -92,6 +106,14 @@ struct KnowledgeBaseView: View {
                     ProgressView().controlSize(.mini)
                 }
                 Spacer()
+                if !store.watchedFolders.isEmpty {
+                    Button("Sync now") {
+                        Task { await store.syncWatchedFolders() }
+                    }
+                    .controlSize(.small)
+                    .disabled(store.isSyncing)
+                    .help("Re-scan watched folders for new, changed, or deleted files")
+                }
                 Button("Watch folder…") { pickWatchedFolder() }
                     .controlSize(.small)
                     .disabled(!store.isAvailable)
@@ -239,9 +261,40 @@ struct KnowledgeBaseView: View {
     }
 
     private var documentList: some View {
+        VStack(spacing: AppTheme.Spacing.sm) {
+            // Filter — with dozens of documents, scrolling stops scaling.
+            if store.documents.count > 5 {
+                HStack(spacing: AppTheme.Spacing.sm) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    TextField("Filter by name or collection…", text: $documentFilter)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12))
+                    if !documentFilter.isEmpty {
+                        Button {
+                            documentFilter = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, AppTheme.Spacing.sm)
+                .padding(.vertical, 5)
+                .background(RoundedRectangle(cornerRadius: 6).fill(AppTheme.Colors.backgroundTertiary))
+            }
+
+            scrollableDocuments
+        }
+    }
+
+    private var scrollableDocuments: some View {
         ScrollView {
             LazyVStack(spacing: 6) {
-                ForEach(store.documents) { document in
+                ForEach(visibleDocuments) { document in
                     HStack(spacing: AppTheme.Spacing.sm) {
                         Image(systemName: "doc.text")
                             .foregroundStyle(AppTheme.Colors.accentPrimary)

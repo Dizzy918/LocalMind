@@ -46,12 +46,24 @@ struct AgentSettingsView: View {
                         Label("Export All Agents…", systemImage: "square.and.arrow.up")
                     }
                     .disabled(dataStore.agents.isEmpty)
+                    Divider()
+                    Button {
+                        importPipelines()
+                    } label: {
+                        Label("Import Pipelines…", systemImage: "square.and.arrow.down")
+                    }
+                    Button {
+                        exportPipelines()
+                    } label: {
+                        Label("Export All Pipelines…", systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(dataStore.pipelines.isEmpty)
                 } label: {
                     Image(systemName: "square.and.arrow.up.on.square")
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
-                .help("Share agents as JSON files")
+                .help("Share agents and pipelines as JSON files")
 
                 Button {
                     isCreating = true
@@ -313,6 +325,35 @@ struct AgentSettingsView: View {
             importStatus = count > 0
                 ? "Imported \(count) agent\(count == 1 ? "" : "s")."
                 : "That file doesn't contain any agents."
+            Task {
+                try? await Task.sleep(for: .seconds(4))
+                importStatus = ""
+            }
+        }
+    }
+
+    private func exportPipelines() {
+        guard let data = dataStore.exportPipelinesData() else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "LocalMind-Pipelines.json"
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            try? data.write(to: url)
+        }
+    }
+
+    private func importPipelines() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        panel.begin { response in
+            guard response == .OK, let url = panel.url,
+                  let data = try? Data(contentsOf: url) else { return }
+            let count = dataStore.importPipelines(from: data)
+            importStatus = count > 0
+                ? "Imported \(count) pipeline\(count == 1 ? "" : "s")."
+                : "That file doesn't contain any pipelines."
             Task {
                 try? await Task.sleep(for: .seconds(4))
                 importStatus = ""

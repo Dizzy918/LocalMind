@@ -98,7 +98,7 @@ struct AutomationsSettingsView: View {
                 Text(run.name)
                     .font(.system(size: 13, weight: .semibold))
                 HStack(spacing: AppTheme.Spacing.sm) {
-                    Text(String(format: "%02d:%02d · %@", run.hour, run.minute, run.frequency.displayName))
+                    Text(String(format: "%02d:%02d · %@", run.hour, run.minute, run.frequencyDescription))
                         .font(AppTheme.Typography.captionSecondary)
                         .foregroundStyle(.secondary)
                     if let agent = dataStore.agent(withID: run.agentID) {
@@ -141,6 +141,7 @@ struct ScheduledRunEditorView: View {
     @State private var agentID: UUID?
     @State private var time: Date
     @State private var frequency: ScheduledRun.Frequency
+    @State private var weekday: Int
 
     init(
         run: ScheduledRun?,
@@ -160,6 +161,14 @@ struct ScheduledRunEditorView: View {
         components.minute = run?.minute ?? 0
         _time = State(initialValue: Calendar.current.date(from: components) ?? Date())
         _frequency = State(initialValue: run?.frequency ?? .daily)
+        _weekday = State(initialValue: run?.weekday ?? 2) // Monday
+    }
+
+    /// Weekday menu options in Calendar numbering (1 = Sunday … 7 = Saturday),
+    /// using the system's localized standalone names.
+    private var weekdayNames: [(number: Int, name: String)] {
+        let symbols = Calendar.current.standaloneWeekdaySymbols
+        return symbols.enumerated().map { ($0.offset + 1, $0.element) }
     }
 
     var body: some View {
@@ -168,7 +177,7 @@ struct ScheduledRunEditorView: View {
                 .font(AppTheme.Typography.title2)
 
             Form {
-                TextField("Name (e.g. Morning briefing)", text: $name)
+                TextField("Name (leave empty to name it after the prompt)", text: $name)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Prompt to run")
@@ -198,6 +207,14 @@ struct ScheduledRunEditorView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+
+                if frequency == .weekly {
+                    Picker("On", selection: $weekday) {
+                        ForEach(weekdayNames, id: \.number) { day in
+                            Text(day.name).tag(day.number)
+                        }
+                    }
+                }
             }
 
             HStack {
@@ -207,8 +224,7 @@ struct ScheduledRunEditorView: View {
                 Button("Save") { save() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty
-                              || prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding(AppTheme.Spacing.xl)
@@ -218,12 +234,21 @@ struct ScheduledRunEditorView: View {
     private func save() {
         let components = Calendar.current.dateComponents([.hour, .minute], from: time)
         var run = existing ?? ScheduledRun(name: name, prompt: prompt)
-        run.name = name.trimmingCharacters(in: .whitespaces)
-        run.prompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedName = name.trimmingCharacters(in: .whitespaces)
+        let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        // An unnamed automation borrows its prompt's first line as a name.
+        if trimmedName.isEmpty {
+            let firstLine = trimmedPrompt.components(separatedBy: .newlines)[0]
+            run.name = String(firstLine.prefix(40)) + (firstLine.count > 40 ? "…" : "")
+        } else {
+            run.name = trimmedName
+        }
+        run.prompt = trimmedPrompt
         run.agentID = agentID
         run.hour = components.hour ?? 9
         run.minute = components.minute ?? 0
         run.frequency = frequency
+        run.weekday = frequency == .weekly ? weekday : nil
         onSave(run)
     }
 }

@@ -13,11 +13,13 @@ nonisolated struct ScheduledRun: Identifiable, Codable, Sendable, Hashable {
     enum Frequency: String, Codable, CaseIterable, Sendable {
         case daily
         case weekdays
+        case weekly
 
         var displayName: String {
             switch self {
             case .daily: return "Every day"
             case .weekdays: return "Weekdays"
+            case .weekly: return "Weekly"
             }
         }
     }
@@ -30,6 +32,10 @@ nonisolated struct ScheduledRun: Identifiable, Codable, Sendable, Hashable {
     var hour: Int
     var minute: Int
     var frequency: Frequency
+    /// Day a `.weekly` run fires, in `Calendar` numbering (1 = Sunday …
+    /// 7 = Saturday). Optional so runs saved before this field existed still
+    /// decode; nil falls back to Monday.
+    var weekday: Int?
     var enabled: Bool
     var lastRunDate: Date?
 
@@ -41,6 +47,7 @@ nonisolated struct ScheduledRun: Identifiable, Codable, Sendable, Hashable {
         hour: Int = 9,
         minute: Int = 0,
         frequency: Frequency = .daily,
+        weekday: Int? = nil,
         enabled: Bool = true,
         lastRunDate: Date? = nil
     ) {
@@ -51,8 +58,18 @@ nonisolated struct ScheduledRun: Identifiable, Codable, Sendable, Hashable {
         self.hour = hour
         self.minute = minute
         self.frequency = frequency
+        self.weekday = weekday
         self.enabled = enabled
         self.lastRunDate = lastRunDate
+    }
+
+    /// Row-friendly frequency text — includes the day for weekly runs
+    /// ("Weekly (Monday)") so the list shows the full schedule.
+    var frequencyDescription: String {
+        guard frequency == .weekly else { return frequency.displayName }
+        let symbols = Calendar.current.standaloneWeekdaySymbols
+        let index = max(0, min(symbols.count - 1, (weekday ?? 2) - 1))
+        return "\(frequency.displayName) (\(symbols[index]))"
     }
 }
 
@@ -69,10 +86,12 @@ final class ScheduleService {
     private let generationService: ChatGenerationService
     private let fileURL: URL
     private var timer: Timer?
+    private let ticksEnabled: Bool
 
     init(dataStore: DataStore, generationService: ChatGenerationService, fileURLOverride: URL? = nil, startTicking: Bool = true) {
         self.dataStore = dataStore
         self.generationService = generationService
+        self.ticksEnabled = startTicking
         if let fileURLOverride {
             fileURL = fileURLOverride
         } else {
@@ -83,9 +102,7 @@ final class ScheduleService {
             fileURL = dir.appendingPathComponent("scheduled_runs.json")
         }
         load()
-        if startTicking {
-            startTimer()
-        }
+        updateTimerState()
     }
 
     // MARK: - CRUD
@@ -97,11 +114,13 @@ final class ScheduleService {
             runs.append(run)
         }
         persist()
+        updateTimerState()
     }
 
     func delete(_ run: ScheduledRun) {
         runs.removeAll { $0.id == run.id }
         persist()
+        updateTimerState()
     }
 
     // MARK: - Scheduling
@@ -111,9 +130,14 @@ final class ScheduleService {
     /// allows today.
     nonisolated static func isDue(_ run: ScheduledRun, now: Date, calendar: Calendar) -> Bool {
         guard run.enabled else { return false }
-        if run.frequency == .weekdays {
+        switch run.frequency {
+        case .weekdays:
             let weekday = calendar.component(.weekday, from: now)
             if weekday == 1 || weekday == 7 { return false } // Sunday / Saturday
+        case .weekly:
+            if calendar.component(.weekday, from: now) != (run.weekday ?? 2) { return false }
+        case .daily:
+            break
         }
         guard let scheduledToday = calendar.date(bySettingHour: run.hour, minute: run.minute, second: 0, of: now),
               now >= scheduledToday else { return false }
@@ -121,15 +145,24 @@ final class ScheduleService {
         return true
     }
 
-    private func startTimer() {
-        timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+    /// The 30-second timer only exists while there's an enabled run to fire —
+    /// no point waking the app forever when the automations list is empty.
+    private func updateTimerState() {
+        guard ticksEnabled else { return }
+        let hasWork = runs.contains(where: \.enabled)
+        if hasWork, timer == nil {
+            timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.tick()
+                }
+            }
+            // Catch up anything already due right after launch.
             Task { @MainActor [weak self] in
                 self?.tick()
             }
-        }
-        // Catch up anything already due right after launch.
-        Task { @MainActor [weak self] in
-            self?.tick()
+        } else if !hasWork {
+            timer?.invalidate()
+            timer = nil
         }
     }
 

@@ -1257,10 +1257,14 @@ struct ChatView: View {
     }
 
     private func insertSnippet(_ snippet: PromptSnippet) {
+        let expanded = PromptSnippet.expandVariables(
+            in: snippet.text,
+            clipboard: NSPasteboard.general.string(forType: .string)
+        )
         if inputText.isEmpty {
-            inputText = snippet.text
+            inputText = expanded
         } else {
-            inputText += (inputText.hasSuffix(" ") || inputText.hasSuffix("\n") ? "" : " ") + snippet.text
+            inputText += (inputText.hasSuffix(" ") || inputText.hasSuffix("\n") ? "" : " ") + expanded
         }
         showingSnippets = false
         isInputFocused = true
