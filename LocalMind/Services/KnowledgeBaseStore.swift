@@ -389,11 +389,25 @@ final class KnowledgeBaseStore {
         }
         guard !produced.isEmpty else { return 0 }
 
+        // Re-importing the same file replaces the old copy instead of
+        // duplicating its chunks — matched by source path when known,
+        // otherwise by name (for manual imports). The replacement inherits
+        // the old document's collection unless a new one was given.
+        var effectiveCollection = collection
+        if let existing = documents.first(where: { doc in
+            if let sourcePath { return doc.sourcePath == sourcePath }
+            return doc.sourcePath == nil && doc.name == name
+        }) {
+            effectiveCollection = collection ?? existing.collection
+            chunks.removeAll { $0.documentID == existing.id }
+            documents.removeAll { $0.id == existing.id }
+        }
+
         // Lock the store to this embedder on the first successful document.
         if documents.isEmpty { embedderID = provider.id }
         documents.append(KnowledgeDocument(
             id: documentID, name: name, addedAt: Date(), chunkCount: produced.count,
-            collection: collection, sourcePath: sourcePath, fileModifiedAt: fileModifiedAt
+            collection: effectiveCollection, sourcePath: sourcePath, fileModifiedAt: fileModifiedAt
         ))
         chunks.append(contentsOf: produced)
         save()

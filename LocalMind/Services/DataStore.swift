@@ -7,6 +7,7 @@
 
 import Foundation
 import Compression
+import os
 
 /// Simple JSON file-based persistence for conversations and focus sessions.
 ///
@@ -34,6 +35,10 @@ final class DataStore {
     private let fileManager = FileManager.default
     let baseDirectory: URL
 
+    /// Persistence failures used to vanish into `try?` — a failed save meant
+    /// silent data loss. They're at least visible in Console now.
+    private static let logger = Logger(subsystem: "com.localmind.app", category: "DataStore")
+
     private static let compressionThreshold = 50_000 // 50KB
     private let pageSize = 20
 
@@ -50,9 +55,9 @@ final class DataStore {
         if fileManager.fileExists(atPath: oldBaseDirectory.path) && !fileManager.fileExists(atPath: baseDirectory.path) {
             do {
                 try fileManager.moveItem(at: oldBaseDirectory, to: baseDirectory)
-                print("Successfully migrated data directory from LocalAIHelper to LocalMind")
+                Self.logger.info("Migrated data directory from LocalAIHelper to LocalMind")
             } catch {
-                print("Failed to migrate data directory: \(error)")
+                Self.logger.error("Failed to migrate data directory: \(error.localizedDescription, privacy: .public)")
             }
         }
 
@@ -116,31 +121,56 @@ final class DataStore {
         return Data(bytes: destinationBuffer, count: compressedSize)
     }
 
-    private func decompressData(_ data: Data, maxSize: Int = 10_000_000) -> Data? {
-        let destinationBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: maxSize)
-        defer { destinationBuffer.deallocate() }
+    private func decompressData(_ data: Data) -> Data? {
+        // Start at a multiple of the compressed size and grow on demand.
+        // A fixed 10MB buffer used to be allocated for every read (even tiny
+        // files) — and, worse, anything that decompressed past 10MB was
+        // silently unloadable.
+        var bufferSize = max(data.count * 4, 64 * 1024)
+        let hardCap = 512 * 1024 * 1024
 
-        let decompressedSize = data.withUnsafeBytes { sourcePtr -> Int in
-            guard let baseAddress = sourcePtr.baseAddress else { return 0 }
-            return compression_decode_buffer(
-                destinationBuffer, maxSize,
-                baseAddress.assumingMemoryBound(to: UInt8.self), data.count,
-                nil, COMPRESSION_ZLIB
-            )
+        while bufferSize <= hardCap {
+            let destinationBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
+            defer { destinationBuffer.deallocate() }
+
+            let decompressedSize = data.withUnsafeBytes { sourcePtr -> Int in
+                guard let baseAddress = sourcePtr.baseAddress else { return 0 }
+                return compression_decode_buffer(
+                    destinationBuffer, bufferSize,
+                    baseAddress.assumingMemoryBound(to: UInt8.self), data.count,
+                    nil, COMPRESSION_ZLIB
+                )
+            }
+
+            guard decompressedSize > 0 else { return nil }
+            // A full buffer means the output was probably truncated — retry bigger.
+            if decompressedSize == bufferSize {
+                bufferSize *= 4
+                continue
+            }
+            return Data(bytes: destinationBuffer, count: decompressedSize)
         }
+        Self.logger.error("Decompression exceeded the \(hardCap)-byte cap; refusing to load")
+        return nil
+    }
 
-        guard decompressedSize > 0 else { return nil }
-        return Data(bytes: destinationBuffer, count: decompressedSize)
+    /// Writes with atomic semantics and logs failures instead of dropping them.
+    private func writeOrLog(_ data: Data, to url: URL) {
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            Self.logger.error("Failed to write \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private func writeWithCompression(_ data: Data, to url: URL) {
         if data.count > Self.compressionThreshold, let compressed = compressData(data) {
             let compressedURL = url.deletingPathExtension().appendingPathExtension("json.gz")
-            try? compressed.write(to: compressedURL)
+            writeOrLog(compressed, to: compressedURL)
             // Remove uncompressed version if it exists
             try? fileManager.removeItem(at: url)
         } else {
-            try? data.write(to: url)
+            writeOrLog(data, to: url)
             // Remove compressed version if it exists
             let compressedURL = url.deletingPathExtension().appendingPathExtension("json.gz")
             try? fileManager.removeItem(at: compressedURL)
@@ -198,7 +228,7 @@ final class DataStore {
             changed += 1
         }
         if changed > 0 {
-            print("DataStore: migrated \(changed) orphan conversation(s) to profile \(profileID)")
+            Self.logger.info("Migrated \(changed) orphan conversation(s) to the active profile")
         }
     }
 
@@ -326,12 +356,14 @@ final class DataStore {
             .sorted { $0.updatedAt > $1.updatedAt }
     }
 
-    /// Merges `source` into `target` by appending source's messages onto target, then deletes source.
-    /// Messages are ordered: target's existing messages first, then source's messages sorted by timestamp.
+    /// Merges `source` into `target`, then deletes source. The combined
+    /// message list is ordered by timestamp so the merged history reads
+    /// chronologically even when the source conversation is the older one.
+    /// (Swift's sort is stable, so same-timestamp messages keep their order.)
     func mergeConversation(_ source: Conversation, into target: Conversation) {
         guard source.id != target.id else { return }
         var merged = target
-        merged.messages.append(contentsOf: source.messages)
+        merged.messages = (target.messages + source.messages).sorted { $0.timestamp < $1.timestamp }
         merged.updatedAt = Date()
         saveConversation(merged)
         deleteConversation(source)
@@ -446,7 +478,7 @@ final class DataStore {
             .appendingPathComponent("\(session.id.uuidString).json")
 
         if let data = try? JSONEncoder().encode(session) {
-            try? data.write(to: url)
+            writeOrLog(data, to: url)
         }
     }
 
@@ -536,7 +568,7 @@ final class DataStore {
             .appendingPathComponent("\(tool.id).json")
 
         if let data = try? JSONEncoder().encode(tool) {
-            try? data.write(to: url)
+            writeOrLog(data, to: url)
         }
     }
 
@@ -560,7 +592,7 @@ final class DataStore {
 
         let url = agentURL(for: agent.id)
         if let data = try? JSONEncoder().encode(agent) {
-            try? data.write(to: url)
+            writeOrLog(data, to: url)
         }
     }
 
@@ -632,7 +664,7 @@ final class DataStore {
             .appendingPathComponent("projects")
             .appendingPathComponent("\(project.id.uuidString).json")
         if let data = try? JSONEncoder().encode(project) {
-            try? data.write(to: url)
+            writeOrLog(data, to: url)
         }
     }
 
@@ -669,7 +701,7 @@ final class DataStore {
             .appendingPathComponent("pipelines")
             .appendingPathComponent("\(pipeline.id.uuidString).json")
         if let data = try? JSONEncoder().encode(pipeline) {
-            try? data.write(to: url)
+            writeOrLog(data, to: url)
         }
     }
 
@@ -679,6 +711,46 @@ final class DataStore {
             .appendingPathComponent("pipelines")
             .appendingPathComponent("\(pipeline.id.uuidString).json")
         try? fileManager.removeItem(at: url)
+    }
+
+    /// All pipelines as a pretty-printed JSON array, for sharing.
+    func exportPipelinesData() -> Data? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return try? encoder.encode(pipelines)
+    }
+
+    /// Imports pipelines from a JSON export (an array or a single pipeline).
+    /// Same-ID pipelines are updated in place — re-importing an edited export
+    /// round-trips — and everything else is added. Returns the count handled.
+    /// Steps referencing agents that don't exist here still import; they just
+    /// run with the default assistant until the agents are imported too.
+    @discardableResult
+    func importPipelines(from data: Data) -> Int {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        var imported: [AgentPipeline] = []
+        if let many = try? decoder.decode([AgentPipeline].self, from: data) {
+            imported = many
+        } else if let one = try? decoder.decode(AgentPipeline.self, from: data) {
+            imported = [one]
+        } else {
+            // Fall back to the default date strategy, mirroring importAgents.
+            let plain = JSONDecoder()
+            if let many = try? plain.decode([AgentPipeline].self, from: data) {
+                imported = many
+            } else if let one = try? plain.decode(AgentPipeline.self, from: data) {
+                imported = [one]
+            } else {
+                return 0
+            }
+        }
+
+        for pipeline in imported {
+            savePipeline(pipeline)
+        }
+        return imported.count
     }
 
     // MARK: - Prompt Snippets
@@ -693,7 +765,7 @@ final class DataStore {
             .appendingPathComponent("prompt_snippets")
             .appendingPathComponent("\(snippet.id.uuidString).json")
         if let data = try? JSONEncoder().encode(snippet) {
-            try? data.write(to: url)
+            writeOrLog(data, to: url)
         }
     }
 

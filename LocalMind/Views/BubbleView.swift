@@ -44,6 +44,19 @@ struct BubbleView: View {
         activeConversation?.messages.last(where: { $0.role == .assistant })?.content
     }
 
+    /// Conversations offered in the picker: the 20 most recent, plus the
+    /// selected one if it's older than that — otherwise the menu couldn't
+    /// even display the current selection.
+    private var pickerConversations: [Conversation] {
+        var recent = Array(dataStore.conversations.prefix(20))
+        if let id = selectedConversationID,
+           !recent.contains(where: { $0.id == id }),
+           let selected = dataStore.conversations.first(where: { $0.id == id }) {
+            recent.append(selected)
+        }
+        return recent
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -51,7 +64,7 @@ struct BubbleView: View {
                 Picker("Conversation", selection: $selectedConversationID) {
                     Text("New Conversation").tag(UUID?.none)
                     Divider()
-                    ForEach(dataStore.conversations.prefix(10)) { conversation in
+                    ForEach(pickerConversations) { conversation in
                         Text(conversation.title).tag(UUID?.some(conversation.id))
                     }
                 }

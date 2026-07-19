@@ -58,7 +58,6 @@ struct Conversation: Identifiable, Codable, Sendable {
     var messages: [ChatMessage]
     let toolType: ToolType
     var customToolID: String?    // Used if toolType == .chat but it's a custom tool
-    var customIconName: String? // Legacy: SF Symbol icon (kept for backward compat)
     var emoji: String?           // AI-generated topic emoji for easy recognition
     var isPinned: Bool           // Pinned conversations float to the top of the sidebar
     var isArchived: Bool         // Archived conversations are hidden by default
@@ -81,7 +80,6 @@ struct Conversation: Identifiable, Codable, Sendable {
         messages: [ChatMessage] = [],
         toolType: ToolType = .chat,
         customToolID: String? = nil,
-        customIconName: String? = nil,
         emoji: String? = nil,
         isPinned: Bool = false,
         isArchived: Bool = false,
@@ -98,7 +96,6 @@ struct Conversation: Identifiable, Codable, Sendable {
         self.messages = messages
         self.toolType = toolType
         self.customToolID = customToolID
-        self.customIconName = customIconName
         self.emoji = emoji
         self.isPinned = isPinned
         self.isArchived = isArchived
@@ -114,7 +111,7 @@ struct Conversation: Identifiable, Codable, Sendable {
 
     // Backward-compatible decoding — old files won't have isPinned/isArchived/profileID.
     enum CodingKeys: String, CodingKey {
-        case id, title, messages, toolType, customToolID, customIconName, emoji
+        case id, title, messages, toolType, customToolID, emoji
         case isPinned, isArchived, systemPromptOverride, profileID, createdAt, updatedAt
         case modelOverride, temperatureOverride, branches, agentID, autoRouteAgent
         case contextSummary, summarizedMessageCount, projectID
@@ -127,7 +124,6 @@ struct Conversation: Identifiable, Codable, Sendable {
         self.messages = try c.decode([ChatMessage].self, forKey: .messages)
         self.toolType = try c.decode(ToolType.self, forKey: .toolType)
         self.customToolID = try c.decodeIfPresent(String.self, forKey: .customToolID)
-        self.customIconName = try c.decodeIfPresent(String.self, forKey: .customIconName)
         self.emoji = try c.decodeIfPresent(String.self, forKey: .emoji)
         self.isPinned = try c.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
         self.isArchived = try c.decodeIfPresent(Bool.self, forKey: .isArchived) ?? false
@@ -152,7 +148,6 @@ struct Conversation: Identifiable, Codable, Sendable {
         try c.encode(messages, forKey: .messages)
         try c.encode(toolType, forKey: .toolType)
         try c.encodeIfPresent(customToolID, forKey: .customToolID)
-        try c.encodeIfPresent(customIconName, forKey: .customIconName)
         try c.encodeIfPresent(emoji, forKey: .emoji)
         try c.encode(isPinned, forKey: .isPinned)
         try c.encode(isArchived, forKey: .isArchived)

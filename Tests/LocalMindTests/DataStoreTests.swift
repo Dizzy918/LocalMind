@@ -32,6 +32,56 @@ final class DataStoreTests: XCTestCase {
         super.tearDown()
     }
 
+    // MARK: - Merge
+
+    func testMergeConversationOrdersMessagesByTimestamp() {
+        // Source is the OLDER conversation — its messages must interleave
+        // before the target's, not get appended after them.
+        let earlier = Date(timeIntervalSinceNow: -3600)
+        let source = Conversation(
+            title: "Old chat",
+            messages: [
+                ChatMessage(role: .user, content: "first ever", timestamp: earlier),
+                ChatMessage(role: .assistant, content: "reply to first", timestamp: earlier.addingTimeInterval(10))
+            ]
+        )
+        let target = Conversation(
+            title: "New chat",
+            messages: [
+                ChatMessage(role: .user, content: "newer message", timestamp: Date())
+            ]
+        )
+        dataStore.saveConversation(source)
+        dataStore.saveConversation(target)
+
+        dataStore.mergeConversation(source, into: target)
+
+        let merged = dataStore.conversations.first { $0.id == target.id }!
+        XCTAssertEqual(merged.messages.map(\.content), ["first ever", "reply to first", "newer message"])
+        XCTAssertFalse(dataStore.conversations.contains { $0.id == source.id })
+    }
+
+    // MARK: - Compression round-trip
+
+    func testLargeConversationSurvivesCompressionRoundTrip() {
+        // >50KB of message content forces the gzip path on save; reloading
+        // exercises decompression (including the growing-buffer logic).
+        let bigText = String(repeating: "The quick brown fox jumps over the lazy dog. ", count: 3000)
+        let conversation = Conversation(
+            title: "Huge",
+            messages: [
+                ChatMessage(role: .user, content: bigText),
+                ChatMessage(role: .assistant, content: bigText)
+            ]
+        )
+        dataStore.saveConversation(conversation)
+
+        let reloaded = DataStore(baseDirectoryOverride: testDir)
+        let loaded = reloaded.conversations.first { $0.id == conversation.id }
+        XCTAssertEqual(loaded?.messages.count, 2)
+        XCTAssertEqual(loaded?.messages.first?.content, bigText)
+    }
+
     // MARK: - Save & Load
 
     func testSaveAndRetrieveConversation() {
