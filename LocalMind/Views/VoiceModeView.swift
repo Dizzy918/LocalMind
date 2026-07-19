@@ -29,8 +29,9 @@ struct VoiceModeView: View {
     @State private var silenceTask: Task<Void, Never>?
     @State private var statusText = "Starting…"
 
-    /// How long a pause ends the utterance and sends it.
-    private static let silenceWindow: Duration = .seconds(1.8)
+    /// How long a pause ends the utterance and sends it. User-adjustable —
+    /// 1.8s is too quick for slow speakers and too slow for rapid back-and-forth.
+    @AppStorage("voiceSilenceWindow") private var silenceWindowSeconds = 1.8
 
     var body: some View {
         VStack(spacing: AppTheme.Spacing.xl) {
@@ -73,6 +74,19 @@ struct VoiceModeView: View {
             .padding(.horizontal, AppTheme.Spacing.xl)
 
             Spacer()
+
+            HStack(spacing: AppTheme.Spacing.sm) {
+                Text("Pause to send")
+                    .font(AppTheme.Typography.captionSecondary)
+                    .foregroundStyle(.secondary)
+                Slider(value: $silenceWindowSeconds, in: 1.0...4.0, step: 0.2)
+                    .frame(width: 140)
+                Text(String(format: "%.1fs", silenceWindowSeconds))
+                    .font(AppTheme.Typography.captionSecondary)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .frame(width: 34, alignment: .leading)
+            }
 
             Text("Tap the orb to \(orbHelp.lowercased()) · Esc to end")
                 .font(AppTheme.Typography.captionSecondary)
@@ -187,7 +201,7 @@ struct VoiceModeView: View {
         guard phase == .listening,
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         silenceTask = Task {
-            try? await Task.sleep(for: Self.silenceWindow)
+            try? await Task.sleep(for: .seconds(silenceWindowSeconds))
             guard !Task.isCancelled else { return }
             sendUtterance()
         }

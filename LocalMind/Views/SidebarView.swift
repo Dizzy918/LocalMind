@@ -61,16 +61,19 @@ struct SidebarView: View {
 
             Spacer()
 
-            // Parallel-generation control: several chats streaming at once is
-            // easy to lose track of — surface the count with a kill switch.
-            if !isCompact, generationService.activeGenerationCount >= 2 {
+            // Generation control: a chat streaming in the background is easy
+            // to lose track of — surface the count with a kill switch. Shown
+            // from one generation up so an off-screen stream is stoppable too.
+            if !isCompact, generationService.activeGenerationCount >= 1 {
                 HStack(spacing: AppTheme.Spacing.sm) {
                     PulsingDot(size: 6)
-                    Text("\(generationService.activeGenerationCount) chats generating")
+                    Text(generationService.activeGenerationCount == 1
+                         ? "1 chat generating"
+                         : "\(generationService.activeGenerationCount) chats generating")
                         .font(AppTheme.Typography.captionSecondary)
                         .foregroundStyle(AppTheme.Colors.textSecondary)
                     Spacer()
-                    Button("Stop all") {
+                    Button(generationService.activeGenerationCount == 1 ? "Stop" : "Stop all") {
                         generationService.stopAll()
                     }
                     .controlSize(.small)

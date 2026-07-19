@@ -18,6 +18,7 @@ struct SettingsView: View {
 
     @State private var selectedTab: SettingsTab = .general
     @State private var importStatus: String = ""
+    @State private var confirmingClearHistory = false
 
     /// Optional deep-link tab. Anything in the app that wants Settings to
     /// land on a specific tab writes the tab's rawValue to this UserDefaults
@@ -480,7 +481,7 @@ struct SettingsView: View {
 
             Section("Danger Zone") {
                 Button("Clear All Chat History") {
-                    dataStore.deleteAllConversations()
+                    confirmingClearHistory = true
                 }
                 .foregroundStyle(AppTheme.Colors.statusOffline)
                 Text("This action cannot be undone. It will delete all stored messages.")
@@ -489,6 +490,18 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .confirmationDialog(
+            "Delete all \(dataStore.totalConversationCount) conversations?",
+            isPresented: $confirmingClearHistory,
+            titleVisibility: .visible
+        ) {
+            Button("Delete Everything", role: .destructive) {
+                dataStore.deleteAllConversations()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Every conversation across all profiles will be permanently deleted. Consider exporting first.")
+        }
     }
     
     private func importConversations() {

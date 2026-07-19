@@ -34,7 +34,9 @@ struct PipelineEditorView: View {
         self.onCancel = onCancel
         _name = State(initialValue: pipeline?.name ?? "")
         _emoji = State(initialValue: pipeline?.emoji ?? "🔗")
-        _steps = State(initialValue: pipeline?.steps ?? [PipelineStep(), PipelineStep()])
+        // One starter step, pre-filled so a new user sees what an instruction
+        // looks like instead of a blank form.
+        _steps = State(initialValue: pipeline?.steps ?? [PipelineStep(instruction: "")])
     }
 
     var body: some View {
