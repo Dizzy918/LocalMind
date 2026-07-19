@@ -1,0 +1,20 @@
+{
+  "id": "7B2F8400-E29B-41D4-A716-446655440121",
+  "name": "Blog Post",
+  "emoji": "📰",
+  "steps": [
+    {
+      "id": "7B2F8400-E29B-41D4-A716-446655440122",
+      "instruction": "Create an outline for a blog post on the user's topic. Choose one sharp angle and state it in a sentence. Then a hierarchical outline where each section header is a claim, with 2-3 supporting beats (examples, evidence, stories) under each. Include a hook idea for the opening."
+    },
+    {
+      "id": "7B2F8400-E29B-41D4-A716-446655440123",
+      "instruction": "Write the full post from the outline above. Open with the hook, keep paragraphs short, use concrete examples over abstractions, and end with a takeaway the reader can act on. Aim for 800-1200 words unless the user specified a length."
+    },
+    {
+      "id": "7B2F8400-E29B-41D4-A716-446655440124",
+      "instruction": "Edit the draft above for publication: tighten every sentence that can lose words without losing meaning, cut any paragraph that doesn't earn its place, strengthen the opening and closing, and check that each section delivers what its header promises. Output the final post only."
+    }
+  ],
+  "createdAt": "2026-07-19T12:00:00Z"
+}

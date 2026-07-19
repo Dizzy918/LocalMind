@@ -1,14 +1,32 @@
 # LocalMind
 
-A private, local-first AI assistant for macOS. All conversations stay on your device — no cloud, no telemetry, no subscriptions.
-
-LocalMind connects to local AI backends running on your machine and provides a clean, modern chat interface inspired by Claude, ChatGPT, and Gemini.
+**The private AI assistant that reads your documents, remembers your conversations, and works while you sleep — without a single byte leaving your Mac.**
 
 ![macOS](https://img.shields.io/badge/macOS-15%2B-black?logo=apple)
 ![Swift](https://img.shields.io/badge/Swift-6-orange?logo=swift)
 ![License](https://img.shields.io/badge/License-MIT-blue)
+[![Build](https://github.com/Dizzy918/LocalMind/actions/workflows/build.yml/badge.svg)](https://github.com/Dizzy918/LocalMind/actions/workflows/build.yml)
 
-## Features
+[**Download**](https://github.com/Dizzy918/LocalMind/releases) · [Privacy](PRIVACY.md) · [Roadmap](ROADMAP.md) · [Changelog](CHANGELOG.md) · [vs. Alternatives](docs/COMPARISON.md) · [Community Packs](community/)
+
+## Why LocalMind
+
+Plenty of apps run AI models on a Mac. LocalMind is what goes **on top** of them: a native assistant layer that makes local models genuinely useful.
+
+- 📚 **Chat with your documents** — drop in PDFs or watch a whole folder; answers come back with **citations**, OCR included, embedded entirely on-device
+- 🤖 **Agents, teams & debate** — reusable specialist personas that can answer in parallel, critique each other over rounds, and chain into pipelines (draft → review → revise)
+- ⏰ **Automations** — *"every morning at 9, summarize what's new in my documents"* — results arrive as unread conversations
+- 🧠 **Cross-chat memory** — opt-in recall of your past conversations, embedded and searched locally
+- 🎙️ **Hands-free voice mode** — speak, pause, hear the answer, repeat — recognition and speech are all on-device
+- ⌨️ **Ask from anywhere** — a global hotkey summons a floating bubble over any app; a Services menu entry sends selected text straight to a chat
+
+It's a native Swift/SwiftUI app (no Electron), MIT-licensed, with **no telemetry, no account, and no cloud fallback** — every network connection the app can make is documented in [PRIVACY.md](PRIVACY.md). It works with the backends you already have: **Ollama, LM Studio, Apple Intelligence, or any OpenAI-compatible server**.
+
+## Full feature list
+
+<details>
+<summary><strong>Expand — everything LocalMind does</strong></summary>
+
 
 - **Multiple AI Backends** — Apple Intelligence, Ollama, LM Studio, and any OpenAI-compatible server
 - **Auto-detection** — automatically discovers running AI servers and connects
@@ -62,6 +80,8 @@ LocalMind connects to local AI backends running on your machine and provides a c
 - **Memory Pressure Monitoring** — pauses background polling and notifies you when system memory is low
 - **Dark & Light Mode** — full theme support with one-click toggle
 - **Fully Private** — everything runs locally, data stored in `~/Library/Application Support/LocalMind/`
+
+</details>
 
 ## Screenshots
 

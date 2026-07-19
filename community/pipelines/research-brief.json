@@ -1,0 +1,20 @@
+{
+  "id": "7B2F8400-E29B-41D4-A716-446655440111",
+  "name": "Research Brief",
+  "emoji": "📋",
+  "steps": [
+    {
+      "id": "7B2F8400-E29B-41D4-A716-446655440112",
+      "instruction": "Gather everything relevant to the user's question: key facts, definitions, numbers, competing viewpoints, and notable unknowns. Organize as bullet points grouped by theme. Mark anything you're uncertain about with (?) rather than asserting it confidently."
+    },
+    {
+      "id": "7B2F8400-E29B-41D4-A716-446655440113",
+      "instruction": "Audit the gathered material above. For each claim: is it well-established, plausible-but-unverified, or dubious? Remove or flag anything that looks like a hallucination or oversimplification. Note the 2-3 most important open questions the material doesn't answer."
+    },
+    {
+      "id": "7B2F8400-E29B-41D4-A716-446655440114",
+      "instruction": "Write a one-page brief from the audited material: a two-sentence bottom line up front, the key facts organized under 3-4 headers, and a final 'What we don't know' section carrying forward the flagged uncertainties. Plain language, no filler."
+    }
+  ],
+  "createdAt": "2026-07-19T12:00:00Z"
+}

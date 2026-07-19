@@ -1,0 +1,20 @@
+{
+  "id": "7B2F8400-E29B-41D4-A716-446655440101",
+  "name": "Draft, Review & Revise",
+  "emoji": "🔁",
+  "steps": [
+    {
+      "id": "7B2F8400-E29B-41D4-A716-446655440102",
+      "instruction": "Write a first draft responding to the user's request. Prioritize getting the substance and structure right over polish — a complete rough draft beats a perfect fragment."
+    },
+    {
+      "id": "7B2F8400-E29B-41D4-A716-446655440103",
+      "instruction": "Review the draft above as a constructive skeptic. List its 3-5 most serious weaknesses in order of impact: unsupported claims, missing counter-arguments, structural problems, unclear passages. Quote the specific text each weakness refers to. Do not rewrite anything yet."
+    },
+    {
+      "id": "7B2F8400-E29B-41D4-A716-446655440104",
+      "instruction": "Produce the final version: revise the original draft to address each weakness identified in the review. Keep what was already working. Output only the finished piece."
+    }
+  ],
+  "createdAt": "2026-07-19T12:00:00Z"
+}
