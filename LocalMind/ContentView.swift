@@ -19,6 +19,10 @@ struct ContentView: View {
     @State private var selectedSelection: SidebarSelection = .chat
     @State private var selectedConversationID: UUID?
     
+    // First-run onboarding: shown once, then never again.
+    @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
+    @State private var showingOnboarding = false
+
     // Sidebar state — persisted width is only read on launch and written on drag end
     @AppStorage("sidebarWidth") private var persistedSidebarWidth: Double = 260
     @State private var liveSidebarWidth: Double = 260
@@ -122,9 +126,27 @@ struct ContentView: View {
             // value saved before the cap existed can't reopen the sidebar wide.
             liveSidebarWidth = min(persistedSidebarWidth, maxSidebarWidth)
             setAppIcon()
+            if !hasCompletedOnboarding {
+                if dataStore.conversations.isEmpty {
+                    showingOnboarding = true
+                } else {
+                    // Upgrading users with existing history aren't new — don't
+                    // greet them with a first-run wizard.
+                    hasCompletedOnboarding = true
+                }
+            }
         }
         .task {
             await aiManager.detectAndConnect()
+        }
+        .sheet(isPresented: $showingOnboarding) {
+            OnboardingView(aiManager: aiManager) {
+                hasCompletedOnboarding = true
+                showingOnboarding = false
+            }
+            // First-run setup shouldn't be dismissible by accident — the
+            // explicit "Start Chatting" / "Skip" buttons are the exits.
+            .interactiveDismissDisabled()
         }
         .onChange(of: profileStore.currentProfileID) { _, _ in
             // Switching profiles must not leave another profile's conversation

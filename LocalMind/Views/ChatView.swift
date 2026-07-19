@@ -1004,8 +1004,46 @@ struct ChatView: View {
 
     // MARK: - Input Bar
 
+    // One-time ask, earned: only after ten real conversations, dismissible
+    // forever with one click either way. Stars are the social proof that
+    // brings the next user in.
+    @AppStorage("didPromptForGitHubStar") private var didPromptForGitHubStar = false
+
+    @ViewBuilder
+    private var starPromptBanner: some View {
+        if !didPromptForGitHubStar && dataStore.conversations.count >= 10 {
+            HStack(spacing: AppTheme.Spacing.sm) {
+                Text("⭐")
+                Text("Enjoying LocalMind? A star on GitHub helps others find it.")
+                    .font(AppTheme.Typography.caption)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                Spacer()
+                Button("Star it") {
+                    didPromptForGitHubStar = true
+                    if let url = URL(string: "https://github.com/Dizzy918/LocalMind") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                .controlSize(.small)
+                .buttonStyle(.borderedProminent)
+                Button("No thanks") {
+                    didPromptForGitHubStar = true
+                }
+                .controlSize(.small)
+            }
+            .padding(.horizontal, AppTheme.Spacing.md)
+            .padding(.vertical, AppTheme.Spacing.sm)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(AppTheme.Colors.backgroundSecondary)
+            )
+            .padding(.bottom, AppTheme.Spacing.sm)
+        }
+    }
+
     private var inputBar: some View {
         VStack(spacing: 0) {
+            starPromptBanner
             VStack(spacing: 0) {
                 // Attachment preview inside the pill
                 if isProcessingImage {

@@ -162,6 +162,34 @@ final class PipelinePersistenceTests: XCTestCase {
     }
 }
 
+// MARK: - Model recommendations
+
+final class ModelRecommenderTests: XCTestCase {
+
+    func testTiersScaleWithMemory() {
+        XCTAssertEqual(ModelRecommender.recommendation(forMemoryGB: 8).modelID, "qwen3:4b")
+        XCTAssertEqual(ModelRecommender.recommendation(forMemoryGB: 16).modelID, "qwen3:8b")
+        XCTAssertEqual(ModelRecommender.recommendation(forMemoryGB: 32).modelID, "qwen3:14b")
+        XCTAssertEqual(ModelRecommender.recommendation(forMemoryGB: 64).modelID, "qwen3:32b")
+        XCTAssertEqual(ModelRecommender.recommendation(forMemoryGB: 128).modelID, "qwen3:32b")
+    }
+
+    func testBoundariesFavorTheSmallerModel() {
+        // At exactly the cutoff, recommend the tier above (12 GB → 8b tier,
+        // not the 4b one) — the ranges are [..<12, ..<24, ..<48, 48+].
+        XCTAssertEqual(ModelRecommender.recommendation(forMemoryGB: 11).modelID, "qwen3:4b")
+        XCTAssertEqual(ModelRecommender.recommendation(forMemoryGB: 12).modelID, "qwen3:8b")
+        XCTAssertEqual(ModelRecommender.recommendation(forMemoryGB: 23).modelID, "qwen3:8b")
+        XCTAssertEqual(ModelRecommender.recommendation(forMemoryGB: 24).modelID, "qwen3:14b")
+        XCTAssertEqual(ModelRecommender.recommendation(forMemoryGB: 47).modelID, "qwen3:14b")
+        XCTAssertEqual(ModelRecommender.recommendation(forMemoryGB: 48).modelID, "qwen3:32b")
+    }
+
+    func testReasonMentionsInstalledMemory() {
+        XCTAssertTrue(ModelRecommender.recommendation(forMemoryGB: 16).reason.contains("16"))
+    }
+}
+
 // MARK: - Prompt snippet variables
 
 final class PromptSnippetVariableTests: XCTestCase {
