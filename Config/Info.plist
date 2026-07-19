@@ -15,6 +15,12 @@
 			</array>
 		</dict>
 	</array>
+	<!-- Sparkle auto-updates: the feed is the appcast attached to the latest
+	     GitHub release (a stable redirect URL). Update integrity: Developer ID
+	     code-signing chain; add SUPublicEDKey here once you generate Sparkle
+	     EdDSA keys (see docs/DISTRIBUTION.md) for signature validation too. -->
+	<key>SUFeedURL</key>
+	<string>https://github.com/Dizzy918/LocalMind/releases/latest/download/appcast.xml</string>
 	<!-- "Ask LocalMind" in the Services menu: select text in any app,
 	     right-click → Services → Ask LocalMind. -->
 	<key>NSServices</key>

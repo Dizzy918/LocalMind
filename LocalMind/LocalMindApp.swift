@@ -199,6 +199,11 @@ struct LocalMindApp: App {
                 }
                 .keyboardShortcut("n", modifiers: .command)
             }
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    UpdaterService.shared.checkForUpdates()
+                }
+            }
         }
         
         Settings {

@@ -159,11 +159,56 @@ jobs:
           cd "$RUNNER_TEMP"
           shasum -a 256 "$APP_NAME.dmg" | tee "$APP_NAME.dmg.sha256"
 
+      # --- Sparkle appcast ---------------------------------------------------
+      # The app's SUFeedURL points at releases/latest/download/appcast.xml, so
+      # attaching an appcast to each release makes in-app updates work. EdDSA
+      # signing needs the SPARKLE_ED_PRIVATE_KEY secret (generate with
+      # Sparkle's `generate_keys`; see docs/DISTRIBUTION.md). Without it the
+      # appcast is still generated — update integrity then rests on the
+      # Developer ID code-signing chain alone.
+
+      - name: Generate Sparkle appcast
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [ -z "$TAG" ] || [ "$TAG" = "main" ]; then TAG="${{ github.event.inputs.tag }}"; fi
+          SPARKLE_VERSION="2.6.4"
+          curl -fsSL -o "$RUNNER_TEMP/sparkle.tar.xz" \
+            "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz"
+          mkdir -p "$RUNNER_TEMP/sparkle-dist"
+          tar -xf "$RUNNER_TEMP/sparkle.tar.xz" -C "$RUNNER_TEMP/sparkle-dist"
+
+          UPDATES="$RUNNER_TEMP/updates"
+          mkdir -p "$UPDATES"
+          cp "$DMG_PATH" "$UPDATES/"
+
+          ARGS=(--download-url-prefix "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/" \
+                -o "$RUNNER_TEMP/appcast.xml")
+          if [ -n "$SPARKLE_ED_PRIVATE_KEY" ]; then
+            printf '%s' "$SPARKLE_ED_PRIVATE_KEY" > "$RUNNER_TEMP/ed_key"
+            ARGS+=(--ed-key-file "$RUNNER_TEMP/ed_key")
+          else
+            echo "::warning::No SPARKLE_ED_PRIVATE_KEY secret — appcast entries won't carry EdDSA signatures."
+          fi
+          "$RUNNER_TEMP/sparkle-dist/bin/generate_appcast" "${ARGS[@]}" "$UPDATES" || {
+            echo "::warning::Appcast generation failed — release continues without in-app update support for this version."
+          }
+          rm -f "$RUNNER_TEMP/ed_key"
+
+      - name: Stage release assets
+        run: |
+          DIST="$RUNNER_TEMP/dist"
+          mkdir -p "$DIST"
+          cp "$DMG_PATH" "$DIST/"
+          cp "$RUNNER_TEMP/$APP_NAME.dmg.sha256" "$DIST/"
+          [ -f "$RUNNER_TEMP/appcast.xml" ] && cp "$RUNNER_TEMP/appcast.xml" "$DIST/" || true
+          ls -la "$DIST"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b  # v3.0.1
         with:
           files: |
-            ${{ env.DMG_PATH }}
-            ${{ runner.temp }}/${{ env.APP_NAME }}.dmg.sha256
+            ${{ runner.temp }}/dist/*
           generate_release_notes: true
           fail_on_unmatched_files: true

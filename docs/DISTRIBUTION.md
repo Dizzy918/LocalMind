@@ -49,6 +49,17 @@ If these repository secrets are set, the release is signed with your Developer I
 | `APPLE_TEAM_ID` | Your 10-character Apple Developer Team ID |
 | `NOTARY_APPLE_ID` | The Apple ID email used for notarization |
 | `NOTARY_APP_PASSWORD` | An [app-specific password](https://support.apple.com/en-us/102654) for that Apple ID |
+| `SPARKLE_ED_PRIVATE_KEY` | (Optional) Sparkle EdDSA private key for signing appcast entries — see below |
+
+### Auto-updates (Sparkle)
+
+The app checks `https://github.com/Dizzy918/LocalMind/releases/latest/download/appcast.xml` for updates (`SUFeedURL` in `Config/Info.plist`); the release workflow generates and attaches that appcast automatically, so in-app updates work as soon as two consecutive releases exist. Sparkle asks the user before enabling automatic checks, and a manual check lives under **LocalMind → Check for Updates…**
+
+To add EdDSA signatures (recommended, on top of the Developer ID chain):
+
+1. Download a [Sparkle release](https://github.com/sparkle-project/Sparkle/releases) and run `./bin/generate_keys` once. It prints a public key and stores the private key in your keychain.
+2. Put the public key into `Config/Info.plist` as `SUPublicEDKey`.
+3. Export the private key (`./bin/generate_keys -x key.txt`) and add its contents as the `SPARKLE_ED_PRIVATE_KEY` repository secret. Delete `key.txt`.
 
 ## Publishing a Homebrew cask
 
