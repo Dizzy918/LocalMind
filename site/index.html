@@ -8,18 +8,19 @@
 <meta property="og:title" content="LocalMind — The private AI assistant for your Mac">
 <meta property="og:description" content="Chat with your documents, build agent teams, schedule automations — all 100% on-device. No cloud, no telemetry, no subscription.">
 <meta property="og:type" content="website">
+<link rel="icon" type="image/png" href="icon.png">
 <style>
   :root {
-    --bg: #0a0a0b;
-    --bg-card: #141416;
-    --bg-card-hover: #1a1a1d;
-    --text: #f2f2f4;
-    --text-dim: #9a9aa3;
+    --bg: #07070a;
+    --bg-card: rgba(20, 20, 26, 0.72);
+    --text: #f2f2f6;
+    --text-dim: #9d9dab;
     --accent: #6c8cff;
+    --accent2: #9d6cff;
     --accent-soft: rgba(108, 140, 255, 0.14);
     --green: #4ade80;
-    --border: #232328;
-    --radius: 14px;
+    --border: rgba(255, 255, 255, 0.08);
+    --radius: 16px;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html { scroll-behavior: smooth; }
@@ -29,141 +30,353 @@
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
   }
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
-  .wrap { max-width: 1020px; margin: 0 auto; padding: 0 24px; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 24px; }
+
+  /* Ambient mesh glows behind everything */
+  .mesh {
+    position: fixed; inset: 0; z-index: -2; pointer-events: none;
+    background:
+      radial-gradient(600px 400px at 15% -5%, rgba(108, 140, 255, 0.13), transparent 60%),
+      radial-gradient(700px 500px at 90% 10%, rgba(157, 108, 255, 0.10), transparent 60%),
+      radial-gradient(800px 600px at 50% 110%, rgba(108, 140, 255, 0.07), transparent 60%);
+  }
+  .grid-lines {
+    position: fixed; inset: 0; z-index: -1; pointer-events: none; opacity: 0.5;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px);
+    background-size: 56px 56px;
+    mask-image: radial-gradient(ellipse 80% 55% at 50% 0%, #000 30%, transparent 75%);
+    -webkit-mask-image: radial-gradient(ellipse 80% 55% at 50% 0%, #000 30%, transparent 75%);
+  }
 
   header {
-    padding: 20px 0;
+    padding: 16px 0;
     border-bottom: 1px solid var(--border);
     position: sticky; top: 0;
-    background: rgba(10, 10, 11, 0.85);
-    backdrop-filter: blur(14px);
-    z-index: 10;
+    background: rgba(7, 7, 10, 0.75);
+    backdrop-filter: blur(16px) saturate(1.4);
+    -webkit-backdrop-filter: blur(16px) saturate(1.4);
+    z-index: 50;
   }
   .nav { display: flex; align-items: center; justify-content: space-between; }
-  .logo { font-weight: 700; font-size: 18px; color: var(--text); display: flex; align-items: center; gap: 9px; }
-  .logo span { font-size: 22px; }
+  .logo { font-weight: 700; font-size: 17px; color: var(--text); display: flex; align-items: center; gap: 10px; }
+  .logo .mark {
+    width: 30px; height: 30px; border-radius: 8px;
+    background: linear-gradient(145deg, #7c9aff, #5b6cff 50%, #4a3fae);
+    display: grid; place-items: center;
+    box-shadow: 0 2px 10px rgba(108, 140, 255, 0.4);
+  }
+  .logo .mark img { width: 22px; height: 22px; filter: invert(1); mix-blend-mode: screen; }
   .nav-links { display: flex; gap: 22px; align-items: center; font-size: 14px; }
   .nav-links a { color: var(--text-dim); }
   .nav-links a:hover { color: var(--text); text-decoration: none; }
+  @media (max-width: 640px) { .nav-links a:not(.btn) { display: none; } }
 
   .btn {
     display: inline-block;
-    background: var(--accent);
+    background: linear-gradient(135deg, #7c9aff, #5b6cff);
     color: #fff !important;
-    padding: 12px 26px;
-    border-radius: 10px;
+    padding: 13px 28px;
+    border-radius: 12px;
     font-weight: 600;
     font-size: 15px;
-    transition: transform 0.12s ease, box-shadow 0.12s ease;
+    border: none; cursor: pointer;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+    box-shadow: 0 4px 20px rgba(108, 140, 255, 0.25), inset 0 1px 0 rgba(255,255,255,0.25);
   }
-  .btn:hover { text-decoration: none; transform: translateY(-1px); box-shadow: 0 8px 28px rgba(108, 140, 255, 0.35); }
-  .btn.small { padding: 8px 16px; font-size: 13px; }
-  .btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--text) !important; }
-  .btn.ghost:hover { box-shadow: none; border-color: var(--text-dim); }
+  .btn:hover { text-decoration: none; transform: translateY(-2px); box-shadow: 0 10px 34px rgba(108, 140, 255, 0.45), inset 0 1px 0 rgba(255,255,255,0.25); }
+  .btn.small { padding: 8px 16px; font-size: 13px; border-radius: 9px; }
+  .btn.ghost { background: rgba(255,255,255,0.04); border: 1px solid var(--border); color: var(--text) !important; box-shadow: none; }
+  .btn.ghost:hover { border-color: rgba(255,255,255,0.25); box-shadow: none; }
 
-  .hero { text-align: center; padding: 96px 0 72px; }
-  .hero h1 {
-    font-size: clamp(34px, 5.5vw, 58px);
-    line-height: 1.12;
-    font-weight: 800;
-    letter-spacing: -0.02em;
-    max-width: 860px;
-    margin: 0 auto 22px;
+  /* ---------- Hero ---------- */
+  .hero {
+    position: relative;
+    text-align: center;
+    padding: 72px 0 40px;
+    overflow: hidden;
   }
-  .hero h1 em { font-style: normal; color: var(--accent); }
+  #net { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
+  .hero .wrap { position: relative; z-index: 1; }
+
+  /* 3D app icon */
+  .icon-stage {
+    perspective: 900px;
+    width: 200px; height: 210px;
+    margin: 0 auto 8px;
+  }
+  .icon-tile {
+    position: relative;
+    width: 168px; height: 168px;
+    margin: 10px auto 0;
+    border-radius: 40px;
+    background: linear-gradient(150deg, #8aa4ff 0%, #5b6cff 48%, #3c3494 100%);
+    transform-style: preserve-3d;
+    transform: rotateX(8deg) rotateY(-10deg);
+    animation: float 7s ease-in-out infinite;
+    box-shadow:
+      0 24px 60px rgba(60, 70, 200, 0.45),
+      0 6px 18px rgba(0, 0, 0, 0.5),
+      inset 0 1.5px 0 rgba(255, 255, 255, 0.45),
+      inset 0 -10px 24px rgba(20, 10, 80, 0.35);
+    will-change: transform;
+  }
+  .icon-tile::before { /* animated halo */
+    content: "";
+    position: absolute; inset: -34px; z-index: -1;
+    border-radius: 60px;
+    background: conic-gradient(from 0deg, rgba(108,140,255,0.0), rgba(108,140,255,0.5), rgba(157,108,255,0.5), rgba(108,140,255,0.0));
+    filter: blur(34px);
+    animation: spin 9s linear infinite;
+  }
+  .icon-tile img {
+    position: absolute; inset: 0; margin: auto;
+    width: 72%; height: 72%;
+    filter: invert(1) drop-shadow(0 4px 10px rgba(0,0,30,0.5));
+    mix-blend-mode: screen;
+    transform: translateZ(34px);
+    pointer-events: none;
+  }
+  .icon-tile .shine {
+    position: absolute; inset: 0;
+    border-radius: 40px;
+    background: linear-gradient(115deg, rgba(255,255,255,0.35) 0%, rgba(255,255,255,0.05) 32%, transparent 46%);
+    transform: translateZ(36px);
+    pointer-events: none;
+  }
+  .icon-shadow {
+    width: 120px; height: 20px;
+    margin: 16px auto 0;
+    border-radius: 50%;
+    background: radial-gradient(ellipse, rgba(0,0,0,0.55), transparent 70%);
+    filter: blur(4px);
+    animation: shadowPulse 7s ease-in-out infinite;
+  }
+  @keyframes float {
+    0%, 100% { transform: rotateX(8deg) rotateY(-10deg) translateY(0); }
+    50%      { transform: rotateX(10deg) rotateY(10deg) translateY(-12px); }
+  }
+  @keyframes shadowPulse {
+    0%, 100% { transform: scaleX(1); opacity: 0.9; }
+    50%      { transform: scaleX(0.78); opacity: 0.55; }
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .icon-stage.live .icon-tile { animation: none; }
+
+  .hero h1 {
+    font-size: clamp(34px, 5.4vw, 58px);
+    line-height: 1.1;
+    font-weight: 800;
+    letter-spacing: -0.022em;
+    max-width: 840px;
+    margin: 18px auto 20px;
+  }
+  .hero h1 .grad {
+    background: linear-gradient(100deg, #8aa4ff, #b98aff 60%, #8aa4ff);
+    background-size: 200% 100%;
+    -webkit-background-clip: text; background-clip: text;
+    color: transparent;
+    animation: shimmer 6s ease-in-out infinite;
+  }
+  @keyframes shimmer { 0%,100% { background-position: 0% 0; } 50% { background-position: 100% 0; } }
   .hero p.sub {
     font-size: clamp(16px, 2vw, 19px);
     color: var(--text-dim);
-    max-width: 640px;
-    margin: 0 auto 36px;
+    max-width: 620px;
+    margin: 0 auto 34px;
   }
-  .hero .cta { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin-bottom: 18px; }
+  .hero .cta { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin-bottom: 16px; }
   .hero .meta { font-size: 13px; color: var(--text-dim); }
-  .badges { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin: 30px 0 0; }
+  .badges { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin: 26px 0 0; }
   .badge {
     font-size: 13px; font-weight: 500;
     padding: 7px 15px;
     border-radius: 999px;
-    background: var(--accent-soft);
-    color: var(--accent);
-    border: 1px solid rgba(108, 140, 255, 0.25);
+    background: rgba(74, 222, 128, 0.09);
+    color: var(--green);
+    border: 1px solid rgba(74, 222, 128, 0.22);
   }
-  .badge.green { background: rgba(74, 222, 128, 0.1); color: var(--green); border-color: rgba(74, 222, 128, 0.25); }
 
-  section { padding: 72px 0; border-top: 1px solid var(--border); }
-  h2 { font-size: clamp(26px, 3.4vw, 36px); font-weight: 750; letter-spacing: -0.01em; margin-bottom: 10px; text-align: center; }
-  .section-sub { text-align: center; color: var(--text-dim); max-width: 560px; margin: 0 auto 48px; font-size: 16px; }
+  /* ---------- Live demo window ---------- */
+  .demo-zone { padding: 44px 0 20px; position: relative; z-index: 1; }
+  .mac-window {
+    max-width: 680px;
+    margin: 0 auto;
+    border-radius: 14px;
+    background: rgba(16, 16, 22, 0.9);
+    border: 1px solid var(--border);
+    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255,255,255,0.03), 0 10px 40px rgba(90, 108, 255, 0.12);
+    overflow: hidden;
+    backdrop-filter: blur(10px);
+  }
+  .titlebar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 11px 14px;
+    background: rgba(255, 255, 255, 0.03);
+    border-bottom: 1px solid var(--border);
+  }
+  .traffic { display: flex; gap: 7px; }
+  .traffic span { width: 12px; height: 12px; border-radius: 50%; }
+  .traffic .r { background: #ff5f57; } .traffic .y { background: #febc2e; } .traffic .g { background: #28c840; }
+  .titlebar .title { flex: 1; text-align: center; font-size: 12.5px; color: var(--text-dim); font-weight: 500; }
+  .offline-chip {
+    font-size: 10.5px; font-weight: 600;
+    color: var(--green);
+    background: rgba(74, 222, 128, 0.1);
+    border: 1px solid rgba(74, 222, 128, 0.25);
+    padding: 3px 9px; border-radius: 999px;
+    white-space: nowrap;
+  }
+  .chat-area { padding: 22px 20px 8px; min-height: 250px; display: flex; flex-direction: column; gap: 12px; }
+  .msg { max-width: 82%; padding: 11px 15px; border-radius: 16px; font-size: 13.5px; line-height: 1.55; text-align: left; }
+  .msg.user {
+    align-self: flex-end;
+    background: linear-gradient(135deg, #6d84f5, #5b6cff);
+    border-bottom-right-radius: 5px;
+    box-shadow: 0 3px 12px rgba(91, 108, 255, 0.3);
+  }
+  .msg.ai {
+    align-self: flex-start;
+    background: rgba(255, 255, 255, 0.055);
+    border: 1px solid var(--border);
+    border-bottom-left-radius: 5px;
+    color: #e6e6ee;
+  }
+  .msg.ai .agent-tag { display: block; font-size: 10.5px; font-weight: 700; color: var(--accent); margin-bottom: 4px; letter-spacing: 0.02em; }
+  .cite {
+    display: inline-flex; align-items: center; gap: 5px;
+    margin-top: 8px; padding: 4px 10px;
+    font-size: 11px; font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    border: 1px solid rgba(108, 140, 255, 0.3);
+    border-radius: 999px;
+  }
+  .thinking { display: inline-flex; gap: 5px; padding: 4px 2px; }
+  .thinking i {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--text-dim);
+    animation: bounce 1.2s ease-in-out infinite;
+  }
+  .thinking i:nth-child(2) { animation-delay: 0.15s; }
+  .thinking i:nth-child(3) { animation-delay: 0.3s; }
+  @keyframes bounce { 0%, 60%, 100% { transform: translateY(0); opacity: 0.4; } 30% { transform: translateY(-5px); opacity: 1; } }
+  .input-mock {
+    margin: 10px 16px 16px;
+    display: flex; align-items: center; gap: 10px;
+    background: rgba(255,255,255,0.045);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 11px 16px;
+    font-size: 13px; color: var(--text-dim);
+  }
+  .input-mock .caret { width: 1.5px; height: 16px; background: var(--accent); animation: blink 1s step-start infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .demo-caption { text-align: center; font-size: 13px; color: var(--text-dim); margin-top: 18px; }
+
+  /* ---------- Sections ---------- */
+  section { padding: 84px 0; position: relative; }
+  section + section { border-top: 1px solid var(--border); }
+  h2 { font-size: clamp(26px, 3.4vw, 38px); font-weight: 760; letter-spacing: -0.015em; margin-bottom: 10px; text-align: center; }
+  .section-sub { text-align: center; color: var(--text-dim); max-width: 560px; margin: 0 auto 52px; font-size: 16px; }
 
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; }
   .card {
+    position: relative;
     background: var(--bg-card);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 26px;
-    transition: background 0.15s ease;
+    padding: 28px 26px;
+    transform-style: preserve-3d;
+    transition: transform 0.18s ease, border-color 0.25s ease;
+    overflow: hidden;
   }
-  .card:hover { background: var(--bg-card-hover); }
-  .card .icon { font-size: 26px; margin-bottom: 14px; display: block; }
+  .card::before { /* pointer-tracking highlight */
+    content: "";
+    position: absolute; inset: 0;
+    background: radial-gradient(340px circle at var(--mx, 50%) var(--my, 50%), rgba(108, 140, 255, 0.13), transparent 65%);
+    opacity: 0;
+    transition: opacity 0.25s ease;
+    pointer-events: none;
+  }
+  .card:hover::before { opacity: 1; }
+  .card:hover { border-color: rgba(108, 140, 255, 0.35); }
+  .card .icon { font-size: 27px; margin-bottom: 14px; display: block; }
   .card h3 { font-size: 16px; font-weight: 650; margin-bottom: 7px; }
   .card p { font-size: 14px; color: var(--text-dim); }
 
   .privacy-list { max-width: 640px; margin: 0 auto; }
   .privacy-item {
     display: flex; gap: 16px; align-items: flex-start;
-    padding: 18px 0;
+    padding: 19px 0;
     border-bottom: 1px solid var(--border);
   }
   .privacy-item:last-child { border-bottom: none; }
   .privacy-item .check { color: var(--green); font-size: 18px; line-height: 1.5; }
   .privacy-item strong { display: block; font-size: 15px; margin-bottom: 2px; }
   .privacy-item p { font-size: 14px; color: var(--text-dim); }
+  .privacy-item code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 5px; font-size: 12.5px; }
 
-  .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 18px; max-width: 900px; margin: 0 auto; }
+  .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 18px; max-width: 940px; margin: 0 auto; }
   .step { text-align: center; padding: 10px; }
   .step .num {
-    width: 40px; height: 40px; border-radius: 50%;
-    background: var(--accent-soft); color: var(--accent);
+    width: 44px; height: 44px; border-radius: 14px;
+    background: linear-gradient(145deg, rgba(108,140,255,0.25), rgba(108,140,255,0.08));
+    border: 1px solid rgba(108,140,255,0.3);
+    color: var(--accent);
     display: flex; align-items: center; justify-content: center;
     font-weight: 700; margin: 0 auto 14px;
   }
   .step h3 { font-size: 15px; margin-bottom: 6px; }
   .step p { font-size: 13.5px; color: var(--text-dim); }
-  .step code { background: var(--bg-card); border: 1px solid var(--border); padding: 2px 7px; border-radius: 6px; font-size: 12.5px; }
+  .step code { background: rgba(255,255,255,0.06); border: 1px solid var(--border); padding: 2px 7px; border-radius: 6px; font-size: 12.5px; }
 
   .faq { max-width: 680px; margin: 0 auto; }
-  .faq details {
-    border-bottom: 1px solid var(--border);
-    padding: 16px 0;
-  }
+  .faq details { border-bottom: 1px solid var(--border); padding: 17px 0; }
   .faq summary { cursor: pointer; font-weight: 600; font-size: 15px; list-style: none; display: flex; justify-content: space-between; }
-  .faq summary::after { content: "+"; color: var(--text-dim); }
-  .faq details[open] summary::after { content: "–"; }
+  .faq summary::-webkit-details-marker { display: none; }
+  .faq summary::after { content: "+"; color: var(--text-dim); transition: transform 0.2s; }
+  .faq details[open] summary::after { transform: rotate(45deg); }
   .faq details p { margin-top: 10px; font-size: 14px; color: var(--text-dim); }
 
-  .final-cta { text-align: center; padding: 88px 0; }
-  .final-cta h2 { margin-bottom: 20px; }
+  .final-cta { text-align: center; padding: 96px 0; }
+  .final-cta h2 { margin-bottom: 22px; }
 
-  footer {
-    border-top: 1px solid var(--border);
-    padding: 32px 0;
-    font-size: 13px;
-    color: var(--text-dim);
-    display: flex;
-  }
-  footer .wrap { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; width: 100%; }
+  footer { border-top: 1px solid var(--border); padding: 32px 0; font-size: 13px; color: var(--text-dim); }
+  footer .wrap { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
   footer a { color: var(--text-dim); }
   footer a:hover { color: var(--text); }
-  footer .links { display: flex; gap: 18px; }
+  footer .links { display: flex; gap: 18px; flex-wrap: wrap; }
+
+  /* Scroll reveal */
+  .reveal { opacity: 0; transform: translateY(26px); transition: opacity 0.7s ease, transform 0.7s cubic-bezier(0.16, 1, 0.3, 1); }
+  .reveal.visible { opacity: 1; transform: none; }
+  .reveal.d1 { transition-delay: 0.07s; } .reveal.d2 { transition-delay: 0.14s; }
+  .reveal.d3 { transition-delay: 0.21s; } .reveal.d4 { transition-delay: 0.28s; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .icon-tile, .icon-shadow, .hero h1 .grad, .icon-tile::before { animation: none !important; }
+    .reveal { opacity: 1; transform: none; transition: none; }
+    html { scroll-behavior: auto; }
+  }
 </style>
 </head>
 <body>
 
+<div class="mesh"></div>
+<div class="grid-lines"></div>
+
 <header>
   <div class="wrap nav">
-    <div class="logo"><span>🧠</span> LocalMind</div>
+    <div class="logo">
+      <span class="mark"><img src="icon.png" alt=""></span>
+      LocalMind
+    </div>
     <nav class="nav-links">
       <a href="#features">Features</a>
       <a href="#privacy">Privacy</a>
@@ -174,9 +387,17 @@
   </div>
 </header>
 
-<section class="hero" style="border-top: none;">
+<section class="hero">
+  <canvas id="net"></canvas>
   <div class="wrap">
-    <h1>The AI assistant that <em>never</em> phones home</h1>
+    <div class="icon-stage" id="iconStage">
+      <div class="icon-tile" id="iconTile">
+        <img src="icon.png" alt="LocalMind app icon">
+        <div class="shine"></div>
+      </div>
+      <div class="icon-shadow"></div>
+    </div>
+    <h1>The AI assistant that <span class="grad">never phones home</span></h1>
     <p class="sub">LocalMind reads your documents, remembers your conversations, and works on a schedule — natively on your Mac, without a single byte leaving it.</p>
     <div class="cta">
       <a class="btn" href="https://github.com/Dizzy918/LocalMind/releases/latest">Download for macOS</a>
@@ -184,159 +405,91 @@
     </div>
     <div class="meta">Free &amp; open source (MIT) · macOS 15+ · Works with Ollama, LM Studio &amp; Apple Intelligence</div>
     <div class="badges">
-      <span class="badge green">No cloud</span>
-      <span class="badge green">No telemetry</span>
-      <span class="badge green">No account</span>
-      <span class="badge green">No subscription</span>
+      <span class="badge">No cloud</span>
+      <span class="badge">No telemetry</span>
+      <span class="badge">No account</span>
+      <span class="badge">No subscription</span>
     </div>
   </div>
 </section>
 
+<div class="demo-zone">
+  <div class="wrap">
+    <div class="mac-window reveal" id="demoWindow">
+      <div class="titlebar">
+        <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+        <div class="title">LocalMind</div>
+        <div class="offline-chip">● 0 bytes sent</div>
+      </div>
+      <div class="chat-area" id="chatArea"></div>
+      <div class="input-mock"><span id="inputText">Message LocalMind…</span><span class="caret"></span></div>
+    </div>
+    <div class="demo-caption">Live demo — this is the actual flow, answered entirely on-device.</div>
+  </div>
+</div>
+
 <section id="features">
   <div class="wrap">
-    <h2>More than a chat window</h2>
-    <p class="section-sub">Model runners give you a chat box. LocalMind is the assistant layer on top — the part that makes local AI actually useful.</p>
+    <h2 class="reveal">More than a chat window</h2>
+    <p class="section-sub reveal d1">Model runners give you a chat box. LocalMind is the assistant layer on top — the part that makes local AI actually useful.</p>
     <div class="grid">
-      <div class="card">
-        <span class="icon">📚</span>
-        <h3>Chat with your documents</h3>
-        <p>Drop in PDFs or watch a whole folder. Answers come back with citations to the exact passages — OCR for scans included, embedded entirely on-device.</p>
-      </div>
-      <div class="card">
-        <span class="icon">🤖</span>
-        <h3>Agents, teams &amp; debate</h3>
-        <p>Build specialist personas with their own model, instructions, and tools. Run four at once side by side — or let them debate and have a moderator pick the winner.</p>
-      </div>
-      <div class="card">
-        <span class="icon">⏰</span>
-        <h3>Automations</h3>
-        <p>"Every morning at 9, summarize what's new in my documents." Scheduled prompts run in the background and arrive as unread conversations.</p>
-      </div>
-      <div class="card">
-        <span class="icon">🧠</span>
-        <h3>Cross-chat memory</h3>
-        <p>Opt-in recall of your past conversations — "as we discussed last week" actually works, powered by on-device embeddings.</p>
-      </div>
-      <div class="card">
-        <span class="icon">🎙️</span>
-        <h3>Hands-free voice mode</h3>
-        <p>Speak, pause, hear the answer, repeat. Recognition and speech synthesis run on-device — a full spoken conversation without the cloud.</p>
-      </div>
-      <div class="card">
-        <span class="icon">⌨️</span>
-        <h3>Ask from anywhere</h3>
-        <p>A global hotkey summons a floating bubble over any app. Select text anywhere and send it straight to a chat from the Services menu.</p>
-      </div>
-      <div class="card">
-        <span class="icon">🔗</span>
-        <h3>Pipelines</h3>
-        <p>Chain agents into reusable workflows — draft → critique → revise — where each step transforms the previous step's output.</p>
-      </div>
-      <div class="card">
-        <span class="icon">🛠️</span>
-        <h3>27 one-click tools</h3>
-        <p>MCP servers for files, Git, search, browsers, Apple apps, and more — each tool call needs your approval, and you supply your own keys.</p>
-      </div>
-      <div class="card">
-        <span class="icon">⚡</span>
-        <h3>Native, not Electron</h3>
-        <p>Pure Swift and SwiftUI. Fast cold start, low memory, real macOS behaviors — a Mac app that feels like a Mac app.</p>
-      </div>
+      <div class="card reveal"><span class="icon">📚</span><h3>Chat with your documents</h3><p>Drop in PDFs or watch a whole folder. Answers come back with citations to the exact passages — OCR for scans included, embedded entirely on-device.</p></div>
+      <div class="card reveal d1"><span class="icon">🤖</span><h3>Agents, teams &amp; debate</h3><p>Build specialist personas with their own model, instructions, and tools. Run four at once side by side — or let them debate and have a moderator pick the winner.</p></div>
+      <div class="card reveal d2"><span class="icon">⏰</span><h3>Automations</h3><p>"Every morning at 9, summarize what's new in my documents." Scheduled prompts run in the background and arrive as unread conversations.</p></div>
+      <div class="card reveal"><span class="icon">🧠</span><h3>Cross-chat memory</h3><p>Opt-in recall of your past conversations — "as we discussed last week" actually works, powered by on-device embeddings.</p></div>
+      <div class="card reveal d1"><span class="icon">🎙️</span><h3>Hands-free voice mode</h3><p>Speak, pause, hear the answer, repeat. Recognition and speech synthesis run on-device — a full spoken conversation without the cloud.</p></div>
+      <div class="card reveal d2"><span class="icon">⌨️</span><h3>Ask from anywhere</h3><p>A global hotkey summons a floating bubble over any app. Select text anywhere and send it straight to a chat from the Services menu.</p></div>
+      <div class="card reveal"><span class="icon">🔗</span><h3>Pipelines</h3><p>Chain agents into reusable workflows — draft → critique → revise — where each step transforms the previous step's output.</p></div>
+      <div class="card reveal d1"><span class="icon">🛠️</span><h3>27 one-click tools</h3><p>MCP servers for files, Git, search, browsers, Apple apps, and more — each tool call needs your approval, and you supply your own keys.</p></div>
+      <div class="card reveal d2"><span class="icon">⚡</span><h3>Native, not Electron</h3><p>Pure Swift and SwiftUI. Fast cold start, low memory, real macOS behaviors — a Mac app that feels like a Mac app.</p></div>
     </div>
   </div>
 </section>
 
 <section id="privacy">
   <div class="wrap">
-    <h2>Privacy you can verify</h2>
-    <p class="section-sub">Not a promise — an auditable property. The source is public and every possible network connection is documented.</p>
+    <h2 class="reveal">Privacy you can verify</h2>
+    <p class="section-sub reveal d1">Not a promise — an auditable property. The source is public and every possible network connection is documented.</p>
     <div class="privacy-list">
-      <div class="privacy-item">
-        <span class="check">✓</span>
-        <div><strong>Everything stays on disk, in plain JSON</strong>
-        <p>Conversations, documents, memory — all in <code>~/Library/Application Support/LocalMind/</code>. Read it, back it up, delete it. No account, no server.</p></div>
-      </div>
-      <div class="privacy-item">
-        <span class="check">✓</span>
-        <div><strong>Zero telemetry, zero analytics</strong>
-        <p>There is no tracking SDK in the binary. Watch the app with Little Snitch: localhost traffic and nothing else.</p></div>
-      </div>
-      <div class="privacy-item">
-        <span class="check">✓</span>
-        <div><strong>No silent cloud fallback</strong>
-        <p>If no local backend is running, LocalMind says so. It never quietly routes your prompt to a hosted API.</p></div>
-      </div>
-      <div class="privacy-item">
-        <span class="check">✓</span>
-        <div><strong>MIT-licensed source</strong>
-        <p>Don't trust — read the code, or build it yourself. Every network connection the app can make is listed in <a href="https://github.com/Dizzy918/LocalMind/blob/main/PRIVACY.md">PRIVACY.md</a>.</p></div>
-      </div>
+      <div class="privacy-item reveal"><span class="check">✓</span><div><strong>Everything stays on disk, in plain JSON</strong><p>Conversations, documents, memory — all in <code>~/Library/Application Support/LocalMind/</code>. Read it, back it up, delete it. No account, no server.</p></div></div>
+      <div class="privacy-item reveal d1"><span class="check">✓</span><div><strong>Zero telemetry, zero analytics</strong><p>There is no tracking SDK in the binary. Watch the app with Little Snitch: localhost traffic and nothing else.</p></div></div>
+      <div class="privacy-item reveal d2"><span class="check">✓</span><div><strong>No silent cloud fallback</strong><p>If no local backend is running, LocalMind says so. It never quietly routes your prompt to a hosted API.</p></div></div>
+      <div class="privacy-item reveal d3"><span class="check">✓</span><div><strong>MIT-licensed source</strong><p>Don't trust — read the code, or build it yourself. Every network connection the app can make is listed in <a href="https://github.com/Dizzy918/LocalMind/blob/main/PRIVACY.md">PRIVACY.md</a>.</p></div></div>
     </div>
   </div>
 </section>
 
 <section id="start">
   <div class="wrap">
-    <h2>Running in two minutes</h2>
-    <p class="section-sub">LocalMind walks you through this on first launch — including a model recommendation sized to your Mac's memory.</p>
+    <h2 class="reveal">Running in two minutes</h2>
+    <p class="section-sub reveal d1">LocalMind walks you through this on first launch — including a model recommendation sized to your Mac's memory.</p>
     <div class="steps">
-      <div class="step">
-        <div class="num">1</div>
-        <h3>Download LocalMind</h3>
-        <p>Grab the DMG from <a href="https://github.com/Dizzy918/LocalMind/releases/latest">Releases</a>, drag to Applications.</p>
-      </div>
-      <div class="step">
-        <div class="num">2</div>
-        <h3>Add a backend</h3>
-        <p>Install <a href="https://ollama.com">Ollama</a> (free) — or skip this on Apple Intelligence Macs, which work with zero setup.</p>
-      </div>
-      <div class="step">
-        <div class="num">3</div>
-        <h3>Pull a model</h3>
-        <p>One click in the app — it recommends the right size for your RAM, like <code>qwen3:8b</code> for 16&nbsp;GB.</p>
-      </div>
-      <div class="step">
-        <div class="num">4</div>
-        <h3>Ask anything</h3>
-        <p>Chat, drop in documents, build an agent — it's all yours, offline.</p>
-      </div>
+      <div class="step reveal"><div class="num">1</div><h3>Download LocalMind</h3><p>Grab the DMG from <a href="https://github.com/Dizzy918/LocalMind/releases/latest">Releases</a>, drag to Applications.</p></div>
+      <div class="step reveal d1"><div class="num">2</div><h3>Add a backend</h3><p>Install <a href="https://ollama.com">Ollama</a> (free) — or skip this on Apple Intelligence Macs, which work with zero setup.</p></div>
+      <div class="step reveal d2"><div class="num">3</div><h3>Pull a model</h3><p>One click in the app — it recommends the right size for your RAM, like <code>qwen3:8b</code> for 16&nbsp;GB.</p></div>
+      <div class="step reveal d3"><div class="num">4</div><h3>Ask anything</h3><p>Chat, drop in documents, build an agent — it's all yours, offline.</p></div>
     </div>
   </div>
 </section>
 
 <section>
   <div class="wrap faq">
-    <h2>Questions</h2>
+    <h2 class="reveal">Questions</h2>
     <div style="height: 26px"></div>
-    <details>
-      <summary>Is it really free?</summary>
-      <p>Yes — LocalMind is MIT-licensed open source. The models it uses (via Ollama and friends) are also free. A paid Pro tier for power features may come later; the core stays free and the code stays open.</p>
-    </details>
-    <details>
-      <summary>What Mac do I need?</summary>
-      <p>macOS 15 or later. Apple Silicon is strongly recommended for model speed — 8 GB of RAM runs small models, 16 GB runs the sweet-spot 8B models comfortably. The Apple Intelligence backend needs macOS 26+ on supported hardware.</p>
-    </details>
-    <details>
-      <summary>How good are local models compared to ChatGPT?</summary>
-      <p>Smaller — and better every month. An 8B model handles everyday writing, summarizing, coding help, and document Q&amp;A well. What you trade in raw capability you get back in privacy, zero cost per token, and offline availability.</p>
-    </details>
-    <details>
-      <summary>Does "chat with documents" upload anything?</summary>
-      <p>No. Documents are chunked, embedded, and searched entirely on your Mac — Apple's NaturalLanguage framework or a local Ollama embedding model does the work. See <a href="https://github.com/Dizzy918/LocalMind/blob/main/PRIVACY.md">PRIVACY.md</a> for the complete network-connection list.</p>
-    </details>
-    <details>
-      <summary>Can it browse the web or use tools?</summary>
-      <p>If you want it to — MCP tool servers (search, files, Git, Apple apps, and more) are opt-in, run locally, and every tool call requires your approval. By default the app makes no internet connections at all.</p>
-    </details>
+    <details class="reveal"><summary>Is it really free?</summary><p>Yes — LocalMind is MIT-licensed open source. The models it uses (via Ollama and friends) are also free. A paid Pro tier for power features may come later; the core stays free and the code stays open.</p></details>
+    <details class="reveal d1"><summary>What Mac do I need?</summary><p>macOS 15 or later. Apple Silicon is strongly recommended for model speed — 8 GB of RAM runs small models, 16 GB runs the sweet-spot 8B models comfortably. The Apple Intelligence backend needs macOS 26+ on supported hardware.</p></details>
+    <details class="reveal d2"><summary>How good are local models compared to ChatGPT?</summary><p>Smaller — and better every month. An 8B model handles everyday writing, summarizing, coding help, and document Q&amp;A well. What you trade in raw capability you get back in privacy, zero cost per token, and offline availability.</p></details>
+    <details class="reveal d3"><summary>Does "chat with documents" upload anything?</summary><p>No. Documents are chunked, embedded, and searched entirely on your Mac — Apple's NaturalLanguage framework or a local Ollama embedding model does the work. See <a href="https://github.com/Dizzy918/LocalMind/blob/main/PRIVACY.md">PRIVACY.md</a> for the complete network-connection list.</p></details>
+    <details class="reveal d4"><summary>Can it browse the web or use tools?</summary><p>If you want it to — MCP tool servers (search, files, Git, Apple apps, and more) are opt-in, run locally, and every tool call requires your approval. By default the app makes no internet connections at all.</p></details>
   </div>
 </section>
 
-<section class="final-cta" style="border-top: 1px solid var(--border);">
+<section class="final-cta">
   <div class="wrap">
-    <h2>Your Mac is smart enough already.</h2>
-    <a class="btn" href="https://github.com/Dizzy918/LocalMind/releases/latest">Download LocalMind</a>
+    <h2 class="reveal">Your Mac is smart enough already.</h2>
+    <a class="btn reveal d1" href="https://github.com/Dizzy918/LocalMind/releases/latest">Download LocalMind</a>
     <div style="height: 14px"></div>
-    <div class="meta" style="color: var(--text-dim); font-size: 13px;">Free · Open source · macOS 15+</div>
+    <div class="meta reveal d2" style="color: var(--text-dim); font-size: 13px;">Free · Open source · macOS 15+</div>
   </div>
 </section>
 
@@ -352,6 +505,231 @@
     </div>
   </div>
 </footer>
+
+<script>
+(function () {
+  "use strict";
+  var reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---------- 3D icon tilt (pointer parallax) ---------- */
+  var stage = document.getElementById("iconStage");
+  var tile = document.getElementById("iconTile");
+  if (stage && tile && !reduceMotion && window.matchMedia("(pointer: fine)").matches) {
+    var hero = document.querySelector(".hero");
+    hero.addEventListener("pointermove", function (e) {
+      var r = stage.getBoundingClientRect();
+      var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+      var dx = (e.clientX - cx) / window.innerWidth;
+      var dy = (e.clientY - cy) / window.innerHeight;
+      stage.classList.add("live");
+      tile.style.transform = "rotateX(" + (8 - dy * 42) + "deg) rotateY(" + (dx * 46) + "deg)";
+    });
+    hero.addEventListener("pointerleave", function () {
+      stage.classList.remove("live");
+      tile.style.transform = "";
+    });
+  }
+
+  /* ---------- Neural network canvas ---------- */
+  var canvas = document.getElementById("net");
+  if (canvas && !reduceMotion) {
+    var ctx = canvas.getContext("2d");
+    var nodes = [], mouse = { x: -9999, y: -9999 };
+    var LINK = 130, MOUSE_LINK = 190;
+
+    function resize() {
+      var heroEl = canvas.parentElement;
+      canvas.width = heroEl.offsetWidth * devicePixelRatio;
+      canvas.height = heroEl.offsetHeight * devicePixelRatio;
+      canvas.style.width = heroEl.offsetWidth + "px";
+      canvas.style.height = heroEl.offsetHeight + "px";
+      ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+      var count = Math.min(90, Math.floor(heroEl.offsetWidth / 14));
+      nodes = [];
+      for (var i = 0; i < count; i++) {
+        nodes.push({
+          x: Math.random() * heroEl.offsetWidth,
+          y: Math.random() * heroEl.offsetHeight,
+          vx: (Math.random() - 0.5) * 0.35,
+          vy: (Math.random() - 0.5) * 0.35,
+          r: 1 + Math.random() * 1.6
+        });
+      }
+    }
+    resize();
+    addEventListener("resize", resize);
+
+    canvas.parentElement.addEventListener("pointermove", function (e) {
+      var r = canvas.getBoundingClientRect();
+      mouse.x = e.clientX - r.left; mouse.y = e.clientY - r.top;
+    });
+    canvas.parentElement.addEventListener("pointerleave", function () {
+      mouse.x = -9999; mouse.y = -9999;
+    });
+
+    var running = true;
+    document.addEventListener("visibilitychange", function () { running = !document.hidden; });
+
+    (function frame() {
+      requestAnimationFrame(frame);
+      if (!running) return;
+      var w = canvas.width / devicePixelRatio, h = canvas.height / devicePixelRatio;
+      ctx.clearRect(0, 0, w, h);
+      for (var i = 0; i < nodes.length; i++) {
+        var n = nodes[i];
+        n.x += n.vx; n.y += n.vy;
+        if (n.x < 0 || n.x > w) n.vx *= -1;
+        if (n.y < 0 || n.y > h) n.vy *= -1;
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, n.r, 0, 6.2832);
+        ctx.fillStyle = "rgba(140, 160, 255, 0.5)";
+        ctx.fill();
+        for (var j = i + 1; j < nodes.length; j++) {
+          var m = nodes[j];
+          var dx = n.x - m.x, dy = n.y - m.y;
+          var d = Math.sqrt(dx * dx + dy * dy);
+          if (d < LINK) {
+            ctx.beginPath();
+            ctx.moveTo(n.x, n.y); ctx.lineTo(m.x, m.y);
+            ctx.strokeStyle = "rgba(120, 145, 255," + (0.16 * (1 - d / LINK)) + ")";
+            ctx.lineWidth = 1;
+            ctx.stroke();
+          }
+        }
+        var mdx = n.x - mouse.x, mdy = n.y - mouse.y;
+        var md = Math.sqrt(mdx * mdx + mdy * mdy);
+        if (md < MOUSE_LINK) {
+          ctx.beginPath();
+          ctx.moveTo(n.x, n.y); ctx.lineTo(mouse.x, mouse.y);
+          ctx.strokeStyle = "rgba(157, 130, 255," + (0.3 * (1 - md / MOUSE_LINK)) + ")";
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
+      }
+    })();
+  }
+
+  /* ---------- Card tilt + pointer highlight ---------- */
+  if (!reduceMotion && window.matchMedia("(pointer: fine)").matches) {
+    document.querySelectorAll(".card").forEach(function (card) {
+      card.addEventListener("pointermove", function (e) {
+        var r = card.getBoundingClientRect();
+        var px = (e.clientX - r.left) / r.width, py = (e.clientY - r.top) / r.height;
+        card.style.setProperty("--mx", (px * 100) + "%");
+        card.style.setProperty("--my", (py * 100) + "%");
+        card.style.transform = "perspective(700px) rotateX(" + ((0.5 - py) * 7) + "deg) rotateY(" + ((px - 0.5) * 7) + "deg) translateY(-2px)";
+      });
+      card.addEventListener("pointerleave", function () { card.style.transform = ""; });
+    });
+  }
+
+  /* ---------- Scroll reveal ---------- */
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (en) {
+      if (en.isIntersecting) { en.target.classList.add("visible"); io.unobserve(en.target); }
+    });
+  }, { threshold: 0.14 });
+  document.querySelectorAll(".reveal").forEach(function (el) { io.observe(el); });
+
+  /* ---------- Auto-playing chat demo ---------- */
+  var area = document.getElementById("chatArea");
+  var inputText = document.getElementById("inputText");
+  if (!area) return;
+
+  var SCENARIOS = [
+    {
+      q: "What does my lease say about ending it early?",
+      a: "Your lease allows early termination with 60 days' written notice plus a fee of one month's rent (clause 14.2). Notice must be delivered by the 1st of the month.",
+      cite: "📄 apartment-lease.pdf · p. 6",
+      agent: null
+    },
+    {
+      q: "Have my agents debate: should we rewrite the backend in Rust?",
+      a: "After two rounds: keep the current stack. The Critic's core argument — the bottleneck is I/O, not compute — went unrefuted. Rewrite cost was estimated at 6+ months for a ~8% latency win.",
+      cite: null,
+      agent: "🧐 Critic · moderator verdict"
+    },
+    {
+      q: "Every morning at 9, summarize what's new in my research folder.",
+      a: "Automation created ✓ — \"Morning research briefing\" will run daily at 9:00 and arrive as an unread conversation. Two new papers were indexed from your watched folder overnight.",
+      cite: "📁 ~/Research · watched",
+      agent: "⏰ Automation"
+    }
+  ];
+
+  function el(tag, cls, html) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (html != null) n.innerHTML = html;
+    return n;
+  }
+  function wait(ms) { return new Promise(function (res) { setTimeout(res, ms); }); }
+
+  function typeInto(node, text, speed) {
+    return new Promise(function (res) {
+      var i = 0;
+      (function tick() {
+        node.textContent = text.slice(0, ++i);
+        if (i < text.length) setTimeout(tick, speed);
+        else res();
+      })();
+    });
+  }
+
+  async function playScenario(s) {
+    // Type the question into the fake input first — like a real user.
+    // The previous exchange stays on screen until "send", so the window
+    // never sits empty.
+    inputText.textContent = "";
+    await typeInto(inputText, s.q, reduceMotion ? 0 : 26);
+    await wait(350);
+    inputText.textContent = "Message LocalMind…";
+    area.innerHTML = "";
+
+    var user = el("div", "msg user", "");
+    user.textContent = s.q;
+    area.appendChild(user);
+    await wait(420);
+
+    var think = el("div", "msg ai");
+    think.appendChild(el("span", "thinking", "<i></i><i></i><i></i>"));
+    area.appendChild(think);
+    await wait(reduceMotion ? 200 : 1300);
+    think.remove();
+
+    var ai = el("div", "msg ai");
+    if (s.agent) ai.appendChild(el("span", "agent-tag", s.agent));
+    var body = el("span");
+    ai.appendChild(body);
+    area.appendChild(ai);
+
+    // Stream the answer word by word.
+    var words = s.a.split(" ");
+    for (var i = 0; i < words.length; i++) {
+      body.textContent += (i ? " " : "") + words[i];
+      if (!reduceMotion) await wait(34);
+    }
+    if (s.cite) ai.appendChild(el("span", "cite", s.cite));
+    await wait(3600);
+  }
+
+  (async function loop() {
+    // Only animate while the demo is on screen.
+    var visible = false;
+    new IntersectionObserver(function (en) { visible = en[0].isIntersecting; }, { threshold: 0.2 })
+      .observe(document.getElementById("demoWindow"));
+    var idx = 0;
+    while (true) {
+      if (visible && !document.hidden) {
+        await playScenario(SCENARIOS[idx % SCENARIOS.length]);
+        idx++;
+      } else {
+        await wait(400);
+      }
+    }
+  })();
+})();
+</script>
 
 </body>
 </html>
