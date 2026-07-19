@@ -324,6 +324,27 @@ final class ChatGenerationServiceTests: XCTestCase {
                       "the routed agent's instructions should drive the answer")
     }
 
+    func testStopAllStopsEveryConversation() async {
+        mock.chunks = Array(repeating: "chunk ", count: 100)
+        mock.chunkDelayNanos = 20_000_000
+
+        let first = makeConversation(question: "one")
+        let second = makeConversation(question: "two")
+        generationService.start(conversationID: first.id)
+        generationService.start(conversationID: second.id)
+        XCTAssertEqual(generationService.activeGenerationCount, 2)
+
+        await waitForFirstText(first.id)
+        await waitForFirstText(second.id)
+        generationService.stopAll()
+
+        XCTAssertEqual(generationService.activeGenerationCount, 0)
+        XCTAssertFalse(generationService.isStreaming(first.id))
+        XCTAssertFalse(generationService.isStreaming(second.id))
+        XCTAssertTrue(storedConversation(first.id)?.messages.last?.content.contains("[Generation stopped]") ?? false)
+        XCTAssertTrue(storedConversation(second.id)?.messages.last?.content.contains("[Generation stopped]") ?? false)
+    }
+
     func testAgentWithToolsDisabledSendsNoTools() async {
         let agent = Agent(name: "NoTools", systemPrompt: "Plain.", allowTools: false)
         dataStore.saveAgent(agent)

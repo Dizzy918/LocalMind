@@ -14,6 +14,7 @@ struct SettingsView: View {
     let dataStore: DataStore
     let mcpService: MCPService?
     let profileStore: ProfileStore
+    let scheduleService: ScheduleService
 
     @State private var selectedTab: SettingsTab = .general
     @State private var importStatus: String = ""
@@ -41,6 +42,7 @@ struct SettingsView: View {
         case chat = "Chat"
         case data = "Data"
         case agents = "Agents"
+        case automations = "Automations"
         case customTools = "Tools"
         case mcp = "MCP"
         case about = "About"
@@ -53,6 +55,7 @@ struct SettingsView: View {
             case .chat: return "message"
             case .data: return "lock.shield"
             case .agents: return "person.3"
+            case .automations: return "clock.badge"
             case .customTools: return "hammer"
             case .mcp: return "server.rack"
             case .about: return "info.circle"
@@ -85,6 +88,10 @@ struct SettingsView: View {
             AgentSettingsView(dataStore: dataStore, aiManager: aiManager)
                 .tabItem { Label(SettingsTab.agents.rawValue, systemImage: SettingsTab.agents.icon) }
                 .tag(SettingsTab.agents)
+
+            AutomationsSettingsView(scheduleService: scheduleService, dataStore: dataStore)
+                .tabItem { Label(SettingsTab.automations.rawValue, systemImage: SettingsTab.automations.icon) }
+                .tag(SettingsTab.automations)
 
             CustomToolSettingsView(dataStore: dataStore)
                 .tabItem { Label(SettingsTab.customTools.rawValue, systemImage: SettingsTab.customTools.icon) }

@@ -117,6 +117,25 @@ final class ChatGenerationService {
         unseenFinished.remove(conversationID)
     }
 
+    /// How many conversations are generating right now.
+    var activeGenerationCount: Int {
+        live.values.filter(\.isStreaming).count
+    }
+
+    /// Whether a detected backend can serve a generation right now. Lets
+    /// callers that fire autonomously (scheduled runs) hold off instead of
+    /// burning their attempt on a guaranteed "no backend" failure.
+    var hasAvailableBackend: Bool {
+        aiManager.currentService != nil
+    }
+
+    /// Stops every in-flight generation, keeping partial answers.
+    func stopAll() {
+        for id in Array(live.keys) where live[id]?.isStreaming == true {
+            stop(conversationID: id)
+        }
+    }
+
     // MARK: - Control
 
     /// Starts generating the next assistant turn for a conversation. The
@@ -163,8 +182,9 @@ final class ChatGenerationService {
     /// Builds the effective system prompt for a conversation: global default
     /// (or custom-tool prompt), replaced by the agent's instructions, replaced
     /// by the per-conversation override — with the active profile's Personal
-    /// Context prepended. Shared with the compare view so alternatives are
-    /// produced under identical conditions.
+    /// Context prepended and the owning project's context appended. Shared
+    /// with the compare view so alternatives are produced under identical
+    /// conditions.
     func resolvedSystemPrompt(for conversation: Conversation, agent: Agent?) -> String {
         let fallback = "You are LocalMind, a helpful, concise AI assistant. Provide clear, actionable responses. Use markdown formatting when appropriate."
         var systemPrompt = UserDefaults.standard.string(forKey: "defaultSystemPrompt") ?? fallback
@@ -183,6 +203,14 @@ final class ChatGenerationService {
             systemPrompt = override
         }
 
+        // Project context composes (appends) rather than replaces — the
+        // persona stays whoever is answering; the project supplies standing
+        // background every chat inside should know.
+        if let project = dataStore.project(withID: conversation.projectID),
+           let projectPrompt = project.systemPrompt, !projectPrompt.isEmpty {
+            systemPrompt += "\n\nProject context (\(project.name)):\n\(projectPrompt)"
+        }
+
         let personalContext = ProfileStore.currentPersonalContext()
         if !personalContext.isEmpty {
             systemPrompt = personalContext + "\n\n---\n\n" + systemPrompt
@@ -191,9 +219,12 @@ final class ChatGenerationService {
     }
 
     /// The agent that will answer the next turn of this conversation —
-    /// the assigned one, unless auto-routing picks a specialist.
+    /// the conversation's own, falling back to its project's default.
     func assignedAgent(for conversation: Conversation) -> Agent? {
-        dataStore.agent(withID: conversation.agentID)
+        if let own = dataStore.agent(withID: conversation.agentID) {
+            return own
+        }
+        return dataStore.agent(withID: dataStore.project(withID: conversation.projectID)?.agentID)
     }
 
     // MARK: - Generation Pipeline
@@ -244,12 +275,18 @@ final class ChatGenerationService {
         // Retrieval-augmented generation, enabled globally or by the agent.
         // Agents can narrow retrieval to their subscribed collections.
         var retrievedSources: [MessageSource] = []
+        // A project that subscribes to collections implies its chats want the
+        // knowledge base even when the global toggle is off. Empty (a legacy
+        // save of "restrict to nothing") doesn't count — retrieval would treat
+        // it as unrestricted.
+        let project = dataStore.project(withID: conversation.projectID)
         let knowledgeEnabled = UserDefaults.standard.bool(forKey: "useKnowledgeBase")
             || (agent?.useKnowledgeBase ?? false)
+            || project?.knowledgeCollections?.isEmpty == false
         if knowledgeEnabled, !lastUserMessage.isEmpty {
             let hits = await KnowledgeBaseStore.shared.retrieve(
                 lastUserMessage,
-                collections: agent?.knowledgeCollections
+                collections: agent?.knowledgeCollections ?? project?.knowledgeCollections
             )
             if !hits.isEmpty {
                 let excerpts = hits.enumerated()

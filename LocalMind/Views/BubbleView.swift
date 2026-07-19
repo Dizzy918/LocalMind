@@ -11,20 +11,39 @@ import AppKit
 struct BubbleView: View {
     let aiManager: AIServiceManager
     let dataStore: DataStore
+    let generationService: ChatGenerationService
     let onClose: () -> Void
-    
+
     @State private var inputText = ""
     @State private var attachedImageData: Data?
-    @State private var attachedImageURL: URL?
-    @State private var isAttachingFile = false
     @State private var selectedConversationID: UUID?
-    @State private var isStreaming = false
-    @State private var isInputFocused = false
     @FocusState private var inputIsFocused: Bool
-    
+
     @AppStorage("isDarkMode") private var isDarkMode: Bool = true
-    @State private var streamingContent = ""
-    
+
+    /// The bubble reflects the shared generation service, so an answer it
+    /// started keeps streaming (and finishes) even after the bubble is hidden.
+    private var activeConversation: Conversation? {
+        guard let id = selectedConversationID else { return nil }
+        return dataStore.conversations.first { $0.id == id }
+    }
+
+    private var isStreaming: Bool {
+        guard let id = selectedConversationID else { return false }
+        return generationService.isStreaming(id)
+    }
+
+    private var streamingContent: String {
+        guard let id = selectedConversationID else { return "" }
+        return generationService.streamingText(id)
+    }
+
+    /// The most recent assistant answer for the selected conversation, shown
+    /// once streaming finishes so the bubble is useful on its own.
+    private var latestAnswer: String? {
+        activeConversation?.messages.last(where: { $0.role == .assistant })?.content
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -38,9 +57,19 @@ struct BubbleView: View {
                 }
                 .labelsHidden()
                 .frame(maxWidth: 200)
-                
+
                 Spacer()
-                
+
+                if selectedConversationID != nil {
+                    HoverIconButton(
+                        systemName: "arrow.up.right.square",
+                        baseColor: AppTheme.Colors.textSecondary,
+                        hoverColor: AppTheme.Colors.accentPrimary,
+                        helpText: "Open in main window",
+                        action: openInApp
+                    )
+                }
+
                 HoverIconButton(
                     systemName: "camera.viewfinder",
                     baseColor: attachedImageData != nil ? AppTheme.Colors.accentPrimary : AppTheme.Colors.textSecondary,
@@ -48,7 +77,7 @@ struct BubbleView: View {
                     helpText: "Take Screenshot",
                     action: takeScreenshot
                 )
-                
+
                 HoverIconButton(
                     systemName: "xmark.circle.fill",
                     baseColor: AppTheme.Colors.textTertiary,
@@ -59,9 +88,9 @@ struct BubbleView: View {
             }
             .padding(AppTheme.Spacing.md)
             .background(AppTheme.Colors.backgroundSecondary.opacity(0.8))
-            
+
             Divider().overlay(AppTheme.Colors.divider)
-            
+
             // Image Preview
             if let data = attachedImageData, let nsImage = NSImage(data: data) {
                 HStack {
@@ -70,7 +99,7 @@ struct BubbleView: View {
                         .scaledToFit()
                         .frame(height: 60)
                         .cornerRadius(AppTheme.Dimensions.cornerRadiusSmall)
-                    
+
                     HoverIconButton(
                         systemName: "xmark.circle.fill",
                         baseColor: AppTheme.Colors.textTertiary,
@@ -79,48 +108,50 @@ struct BubbleView: View {
                     ) {
                         attachedImageData = nil
                     }
-                    
+
                     Spacer()
                 }
                 .padding(AppTheme.Spacing.md)
                 .background(AppTheme.Colors.backgroundPrimary.opacity(0.8))
             }
-            
-            // Content Stream (if streaming)
-            if isStreaming {
+
+            // Answer / streaming area
+            if isStreaming || latestAnswer != nil {
                 ScrollView {
-                    Text(streamingContent)
+                    Text((isStreaming ? streamingContent : (latestAnswer ?? "")).strippingThinkBlocks)
                         .font(AppTheme.Typography.body)
+                        .textSelection(.enabled)
                         .padding(AppTheme.Spacing.md)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxHeight: 150)
                 .background(AppTheme.Colors.backgroundPrimary.opacity(0.8))
-                
+
                 Divider().overlay(AppTheme.Colors.divider)
             }
-            
+
             // Input Area
             HStack {
                 TextField("Ask LocalMind...", text: $inputText, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(AppTheme.Typography.body)
                     .lineLimit(1...5)
+                    .focused($inputIsFocused)
                     .onSubmit {
                         if !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             sendMessage()
                         }
                     }
-                
+
                 HoverIconButton(
-                    systemName: "arrow.up.circle.fill",
+                    systemName: isStreaming ? "stop.circle.fill" : "arrow.up.circle.fill",
                     size: 24,
-                    baseColor: inputText.isEmpty ? AppTheme.Colors.textTertiary : AppTheme.Colors.accentPrimary,
+                    baseColor: inputText.isEmpty && !isStreaming ? AppTheme.Colors.textTertiary : AppTheme.Colors.accentPrimary,
                     hoverColor: AppTheme.Colors.accentPrimary,
-                    helpText: "Send message",
-                    action: sendMessage
+                    helpText: isStreaming ? "Stop" : "Send message",
+                    action: { isStreaming ? stopStreaming() : sendMessage() }
                 )
-                .disabled(inputText.isEmpty || isStreaming)
+                .disabled(inputText.isEmpty && !isStreaming)
             }
             .padding(AppTheme.Spacing.md)
             .background(AppTheme.Colors.backgroundSecondary.opacity(0.8))
@@ -153,43 +184,42 @@ struct BubbleView: View {
     }
     
     private func sendMessage() {
-        guard !inputText.isEmpty, let service = aiManager.currentService else { return }
-        
-        // Find or create conversation
+        let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, aiManager.currentService != nil else { return }
+
+        // Find or create the target conversation.
         var targetConversation: Conversation
         if let id = selectedConversationID, let existing = dataStore.conversations.first(where: { $0.id == id }) {
             targetConversation = existing
         } else {
             targetConversation = Conversation(toolType: .chat)
-            selectedConversationID = targetConversation.id
         }
-        
-        let userMessage = ChatMessage(role: .user, content: inputText, imageData: attachedImageData)
-        targetConversation.messages.append(userMessage)
+
+        targetConversation.messages.append(ChatMessage(role: .user, content: text, imageData: attachedImageData))
         targetConversation.updateTitleIfNeeded()
-        
+        targetConversation.updatedAt = Date()
+        dataStore.saveConversation(targetConversation)
+        selectedConversationID = targetConversation.id
+
         inputText = ""
         attachedImageData = nil
-        isStreaming = true
-        streamingContent = ""
-        
-        Task { @MainActor in
-            do {
-                for try await chunk in service.streamChat(messages: targetConversation.messages, systemPrompt: "You are LocalMind.", modelOverride: nil, parameters: aiManager.aiParameters, tools: nil) {
-                    if case .text(let t) = chunk { streamingContent += t }
-                }
-                
-                let aiMessage = ChatMessage(role: .assistant, content: streamingContent)
-                targetConversation.messages.append(aiMessage)
-                dataStore.saveConversation(targetConversation)
-                
-                isStreaming = false
-                streamingContent = ""
-                onClose() // Auto-close after completion
-            } catch {
-                streamingContent = "⚠️ Error: \(error.localizedDescription)"
-                isStreaming = false
-            }
-        }
+
+        // Route through the shared service — the bubble gets agents, memory,
+        // context management, and tools for free, and the answer survives the
+        // bubble being hidden (unlike the old inline stream that died on close).
+        generationService.start(conversationID: targetConversation.id)
+    }
+
+    private func stopStreaming() {
+        guard let id = selectedConversationID else { return }
+        generationService.stop(conversationID: id)
+    }
+
+    /// Hands the current conversation off to the main window and hides the bubble.
+    private func openInApp() {
+        guard let id = selectedConversationID else { return }
+        NotificationCenter.default.post(name: .openConversation, object: id)
+        NSApp.activate(ignoringOtherApps: true)
+        onClose()
     }
 }

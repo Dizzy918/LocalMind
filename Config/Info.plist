@@ -15,5 +15,25 @@
 			</array>
 		</dict>
 	</array>
+	<!-- "Ask LocalMind" in the Services menu: select text in any app,
+	     right-click → Services → Ask LocalMind. -->
+	<key>NSServices</key>
+	<array>
+		<dict>
+			<key>NSMenuItem</key>
+			<dict>
+				<key>default</key>
+				<string>Ask LocalMind</string>
+			</dict>
+			<key>NSMessage</key>
+			<string>askLocalMind</string>
+			<key>NSPortName</key>
+			<string>LocalMind</string>
+			<key>NSSendTypes</key>
+			<array>
+				<string>NSStringPboardType</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

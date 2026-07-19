@@ -333,7 +333,7 @@ struct KnowledgeBaseView: View {
             var failures: [String] = []
             var anyAdded = false
             for url in files {
-                guard let text = DocumentImporter.extractText(from: url),
+                guard let text = await DocumentImporter.extractTextInBackground(from: url),
                       !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                       await store.addDocument(name: url.lastPathComponent, text: text) > 0 else {
                     failures.append(url.lastPathComponent)

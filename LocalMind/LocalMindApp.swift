@@ -15,13 +15,29 @@ extension Notification.Name {
     static let openConversation = Notification.Name("LocalMind.openConversation")
 }
 
+/// Receives "Ask LocalMind" from the system Services menu (selected text in
+/// any app). Registered as `NSApp.servicesProvider`; the NSMessage in
+/// Config/Info.plist maps to `askLocalMind:userData:error:`.
+final class ServicesProvider: NSObject {
+    var onAsk: ((String) -> Void)?
+
+    @objc func askLocalMind(_ pasteboard: NSPasteboard, userData: String, error: AutoreleasingUnsafeMutablePointer<NSString>) {
+        guard let text = pasteboard.string(forType: .string)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty else { return }
+        onAsk?(text)
+    }
+}
+
 @main
 struct LocalMindApp: App {
     @State private var sharedAIManager: AIServiceManager
     @State private var sharedDataStore: DataStore
     @State private var sharedGenerationService: ChatGenerationService
+    @State private var sharedScheduleService: ScheduleService
     @State private var sharedProfileStore = ProfileStore()
     @State private var sharedMCPService: MCPService?
+    @State private var servicesProvider = ServicesProvider()
     @AppStorage("isDarkMode") private var isDarkMode: Bool = true
     @AppStorage("enableGlobalShortcut") private var enableGlobalShortcut: Bool = false
 
@@ -37,9 +53,11 @@ struct LocalMindApp: App {
         // store/manager instances the views get.
         let aiManager = AIServiceManager()
         let dataStore = DataStore()
+        let generationService = ChatGenerationService(dataStore: dataStore, aiManager: aiManager)
         _sharedAIManager = State(initialValue: aiManager)
         _sharedDataStore = State(initialValue: dataStore)
-        _sharedGenerationService = State(initialValue: ChatGenerationService(dataStore: dataStore, aiManager: aiManager))
+        _sharedGenerationService = State(initialValue: generationService)
+        _sharedScheduleService = State(initialValue: ScheduleService(dataStore: dataStore, generationService: generationService))
     }
 
     /// Handles localmind:// URLs — the app's automation surface (Shortcuts,
@@ -67,24 +85,30 @@ struct LocalMindApp: App {
                 NotificationCenter.default.post(name: .newConversation, object: nil)
                 return
             }
-            var conversation = Conversation(
-                title: String(prompt.prefix(50)) + (prompt.count > 50 ? "..." : ""),
-                messages: [ChatMessage(role: .user, content: prompt)]
-            )
-            if let agentName = value("agent"),
-               let agent = sharedDataStore.agents.first(where: {
-                   $0.name.caseInsensitiveCompare(agentName) == .orderedSame
-               }) {
-                conversation.agentID = agent.id
-                conversation.emoji = agent.emoji
-            }
-            sharedDataStore.saveConversation(conversation)
-            NotificationCenter.default.post(name: .openConversation, object: conversation.id)
-            sharedGenerationService.start(conversationID: conversation.id)
+            startQuickAsk(prompt: prompt, agentName: value("agent"))
 
         default:
             break
         }
+    }
+
+    /// Shared entry point for external asks (URL scheme, Services menu):
+    /// creates a conversation, opens it, and starts generating.
+    private func startQuickAsk(prompt: String, agentName: String?) {
+        var conversation = Conversation(
+            title: String(prompt.prefix(50)) + (prompt.count > 50 ? "..." : ""),
+            messages: [ChatMessage(role: .user, content: prompt)]
+        )
+        if let agentName,
+           let agent = sharedDataStore.agents.first(where: {
+               $0.name.caseInsensitiveCompare(agentName) == .orderedSame
+           }) {
+            conversation.agentID = agent.id
+            conversation.emoji = agent.emoji
+        }
+        sharedDataStore.saveConversation(conversation)
+        NotificationCenter.default.post(name: .openConversation, object: conversation.id)
+        sharedGenerationService.start(conversationID: conversation.id)
     }
     
     var body: some Scene {
@@ -115,10 +139,19 @@ struct LocalMindApp: App {
                        !sharedProfileStore.isSignedIn {
                         _ = sharedProfileStore.createProfile(displayName: "UI Test", email: "", method: .guest)
                     }
+
+                    // "Ask LocalMind" in every app's Services menu.
+                    servicesProvider.onAsk = { text in
+                        guard sharedProfileStore.isSignedIn else { return }
+                        NSApp.activate(ignoringOtherApps: true)
+                        startQuickAsk(prompt: text, agentName: nil)
+                    }
+                    NSApp.servicesProvider = servicesProvider
+                    NSUpdateDynamicServices()
                     let mcpService = MCPService(dataStore: sharedDataStore)
                     sharedMCPService = mcpService
                     sharedAIManager.setMCPService(mcpService)
-                    BubbleWindowController.shared.setup(aiManager: sharedAIManager, dataStore: sharedDataStore)
+                    BubbleWindowController.shared.setup(aiManager: sharedAIManager, dataStore: sharedDataStore, generationService: sharedGenerationService)
 
                     // Hand the data store a one-time migration hook so the
                     // first profile adopts pre-existing (pre-profiles) chats.
@@ -173,7 +206,8 @@ struct LocalMindApp: App {
                 aiManager: sharedAIManager,
                 dataStore: sharedDataStore,
                 mcpService: sharedMCPService,
-                profileStore: sharedProfileStore
+                profileStore: sharedProfileStore,
+                scheduleService: sharedScheduleService
             )
                 .preferredColorScheme(isDarkMode ? .dark : .light)
         }

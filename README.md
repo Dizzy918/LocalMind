@@ -22,8 +22,11 @@ LocalMind connects to local AI backends running on your machine and provides a c
 - **Text-to-Speech** — read AI responses aloud
 - **Vision** — drag & drop or paste images for analysis (requires a vision model like LLaVA)
 - **File Attachments** — drop PDFs and text files directly into the chat
-- **Chat with Your Documents** — add PDFs/text files (or whole folders, via picker or drag-and-drop) to a local knowledge base; relevant passages are retrieved, **cited**, and grounded into answers. Embeds on-device via Apple's NaturalLanguage by default, or via Ollama's `nomic-embed-text` for higher-quality retrieval — nothing is uploaded
+- **Chat with Your Documents** — add PDFs, Word/EPUB/HTML/RTF, source code, and images to a local knowledge base; relevant passages are retrieved, **cited**, and grounded into answers. Scanned PDFs and images are read with on-device OCR (Vision). Embeds on-device via Apple's NaturalLanguage by default, or via Ollama's `nomic-embed-text` for higher-quality retrieval — nothing is uploaded
 - **Agents** — create reusable AI personas, each with its own instructions, pinned backend & model, creativity level, and tool/knowledge-base access; assign one per conversation. Ships with starter agents (Researcher, Coder, Writer, Critic)
+- **Projects** — group conversations into workspaces that carry defaults: a project picks the agent, knowledge collections, and standing context every chat inside inherits
+- **Agent Pipelines** — chain agents into reusable workflows (Writer drafts → Critic reviews → Writer revises); each step transforms the previous step's output, and the run saves as a conversation
+- **Automations** — schedule a prompt to run daily or on weekdays; the answer arrives as an unread conversation ("every morning, summarize what's new in my documents")
 - **Agent Team** — send one prompt to up to 4 agents at once and watch them answer in parallel, side by side — even across different backends (Ollama next to Apple Intelligence); then synthesize their answers into one, or continue any answer as a normal chat
 - **Auto-Routing** — flip a conversation to "Auto" and each message is classified and routed to the best-fitting agent; every answer is labeled with the agent and model that produced it
 - **Debate Mode** — after a team run, agents read each other's answers, critique them, and revise over multiple rounds; an impartial moderator can declare a winner
@@ -32,7 +35,10 @@ LocalMind connects to local AI backends running on your machine and provides a c
 - **Smart Context** — messages are selected by token budget (not just count), and a rolling summary keeps the gist of older messages in context on long conversations
 - **Cross-Chat Memory** — opt-in recall of relevant exchanges from your other conversations, embedded and searched entirely on-device
 - **In-App Model Manager** — pull Ollama models with a progress bar, delete them, and browse any backend's catalogue without touching a terminal (Settings → Providers)
+- **Hands-Free Voice Mode** — a full spoken conversation loop: talk, pause, and the answer is read back to you, then it listens again — all on-device
 - **Automation** — `localmind://ask?prompt=…&agent=Coder` starts an (agent-routed) chat from Shortcuts, scripts, or other apps
+- **Ask LocalMind Anywhere** — select text in any Mac app and right-click → Services → "Ask LocalMind" to send it straight to a chat
+- **Floating Bubble** — the global-hotkey quick-ask now routes through the same engine as the main window, so its answers get agents, memory, and context — and keep generating after you dismiss it
 - **Knowledge Collections** — group documents into named sets and point each agent at just the collections it needs
 - **Watched Folders** — point the knowledge base at a folder and its files are indexed and kept in sync automatically as they change on disk
 - **Per-Message Stats** — every answer shows the model, tokens/sec, and generation time
@@ -43,6 +49,10 @@ LocalMind connects to local AI backends running on your machine and provides a c
 - **Conversation Branches** — editing or regenerating saves the previous version so you can restore it
 - **Tool-Call Approval & Audit** — approve each MCP tool call before it runs and review a log of what the AI did
 - **Full-Text Search** — multi-word search across all conversation content, not just titles
+- **Find in Conversation** — ⌘F inside any chat jumps between matches with the active one spotlighted
+- **Prompt Library** — save prompts you reuse and insert them from the input bar's book button
+- **MCP Server Catalog** — 27 one-click servers across files, dev, web, productivity, communication, and Apple apps: filesystem, Git, GitHub, PostgreSQL, SQLite, Kubernetes, web fetch, DuckDuckGo & Brave search, browser automation (Playwright), YouTube transcripts, Google Maps, **Gmail, Google Calendar, Google Drive, Notion, Slack, Todoist**, **Apple Suite (Mail/Messages/Calendar/Reminders/Contacts), Apple Reminders, Apple Shortcuts, AppleScript, Apple Notes**, Obsidian vaults, memory, sequential thinking, and time. You supply your own API keys/OAuth — nothing is brokered through a cloud
+- **Stop All** — when several chats are generating at once, the sidebar shows a count with a one-click kill switch
 - **Custom Tools** — create reusable AI tools with custom system prompts
 - **Menu Bar App** — quick access from the menu bar without switching windows
 - **Global Hotkey** — summon a floating bubble window from anywhere
@@ -52,6 +62,16 @@ LocalMind connects to local AI backends running on your machine and provides a c
 - **Memory Pressure Monitoring** — pauses background polling and notifies you when system memory is low
 - **Dark & Light Mode** — full theme support with one-click toggle
 - **Fully Private** — everything runs locally, data stored in `~/Library/Application Support/LocalMind/`
+
+## Screenshots
+
+<!-- Drop your own screenshots into docs/images/ and reference them here, e.g.:
+     ![Chat](docs/images/chat.png)
+     ![Agent Team](docs/images/agent-team.png)
+     Screenshots aren't committed automatically — a full-screen capture would
+     include whatever else is on your desktop. -->
+
+_Add screenshots to `docs/images/` and link them here._
 
 ## Requirements
 
@@ -186,11 +206,16 @@ Once a backend is running, LocalMind will detect it automatically and show a gre
 LocalMind/
 ├── LocalMindApp.swift          # App entry point, window setup, menu bar
 ├── ContentView.swift           # Main layout (sidebar + chat)
+├── Config/
+│   └── Info.plist              # URL scheme + Services menu registration
 ├── Models/
-│   ├── ChatMessage.swift       # Message model with image/file support
-│   ├── Conversation.swift      # Conversation model with emoji/title
+│   ├── ChatMessage.swift       # Message model with image/file/reasoning support
+│   ├── Conversation.swift      # Conversation model with emoji/title/project
 │   ├── AIParameters.swift      # Temperature, top-p, context settings
-│   ├── Agent.swift             # AI personas (prompt + model + capabilities)
+│   ├── Agent.swift             # AI personas (prompt + backend/model + capabilities)
+│   ├── Project.swift           # Workspaces with inherited defaults
+│   ├── AgentPipeline.swift     # Chained multi-agent workflows
+│   ├── PromptSnippet.swift     # Saved reusable prompts
 │   ├── CustomTool.swift        # User-defined AI tools
 │   ├── FocusSession.swift      # Focus timer sessions
 │   └── TaskItem.swift          # Task definitions
@@ -199,9 +224,12 @@ LocalMind/
 │   ├── AIServiceManager.swift  # Auto-detection, polling, cross-backend routing
 │   ├── ChatGenerationService.swift # Background generation, auto-routing, rolling summary
 │   ├── ChatMemoryStore.swift   # On-device cross-conversation memory
-│   ├── OllamaService.swift     # Ollama API client
+│   ├── ScheduleService.swift   # Scheduled/automated runs
+│   ├── OllamaService.swift     # Ollama API client + model pull/delete
 │   ├── OpenAICompatibleService.swift  # OpenAI-compatible API client
 │   ├── AppleFoundationModelService.swift  # Apple Intelligence
+│   ├── KnowledgeBaseStore.swift # Documents, collections, OCR, watched folders
+│   ├── MCPCatalog.swift        # 27 one-click MCP server presets
 │   ├── DataStore.swift         # JSON persistence with compression + search
 │   ├── VoiceManager.swift      # Speech recognition + TTS
 │   ├── HotkeyManager.swift     # Global keyboard shortcut
@@ -209,18 +237,20 @@ LocalMind/
 │   └── MemoryPressureMonitor.swift   # System memory monitoring
 ├── Theme/
 │   ├── Theme.swift             # Design system (colors, typography, spacing)
-│   └── Components.swift        # Reusable UI components
+│   └── Components.swift        # Reusable UI components (bubbles, reasoning, status)
 └── Views/
-    ├── ChatView.swift          # Chat interface with streaming
-    ├── AgentTeamView.swift     # Run several agents on one prompt in parallel
-    ├── AgentSettingsView.swift # Create/edit/manage agents
-    ├── SidebarView.swift       # Navigation + conversation history
+    ├── ChatView.swift          # Chat interface with streaming + ⌘F search
+    ├── AgentTeamView.swift     # Parallel agents, debate rounds, moderator, synthesis
+    ├── AgentSettingsView.swift # Create/edit/manage agents + pipelines
+    ├── ProjectEditorView.swift # Project workspace editor
+    ├── PipelineViews.swift     # Pipeline editor + runner
+    ├── AutomationsSettingsView.swift # Scheduled-run editor
+    ├── ModelManagerView.swift  # In-app model pull/delete/browse
+    ├── VoiceModeView.swift     # Hands-free voice conversation
+    ├── SidebarView.swift       # Navigation, projects, conversation history
     ├── SettingsView.swift      # Preferences panel
-    ├── FocusTimerView.swift    # Pomodoro timer
-    ├── QuickActionPanel.swift  # Menu bar panel
     ├── BubbleView.swift        # Floating window view
-    ├── MessageMarkdownView.swift  # Markdown message renderer
-    └── CustomToolSettingsView.swift  # Custom tool editor
+    └── MessageMarkdownView.swift  # Markdown message renderer
 ```
 
 ## Keyboard Shortcuts
@@ -228,6 +258,7 @@ LocalMind/
 | Shortcut | Action |
 |----------|--------|
 | `Cmd + Return` | Send message |
+| `Cmd + F` | Find in conversation |
 | `Cmd + V` | Paste image from clipboard |
 | `Up / Down` | Navigate prompt history |
 | `Ctrl + Space` | Toggle floating bubble (global) |
@@ -236,13 +267,21 @@ LocalMind/
 
 All settings are available in the app's Settings panel (`Cmd + ,`):
 
-- **AI Backend** — choose preferred backend or let auto-detect decide
+- **AI Backend** — choose preferred backend or let auto-detect decide, and pull/delete models in-app
 - **Model Selection** — pick from available models on your server
-- **Agents** — create and manage AI personas; assign one from the chat header, or run several at once via "Ask multiple agents"
+- **Agents** — create and manage AI personas and pipelines; assign one from the chat header, or run several at once via "Ask multiple agents"
+- **Automations** — schedule prompts to run on a timetable
 - **System Prompt** — customize the default AI personality
 - **Temperature / Top-P** — tune generation parameters
-- **Context Limit** — control how many messages are sent as context
+- **Context Limit** — control how many messages are sent as context (a rolling summary preserves older ones)
+- **Memory** — opt in to cross-conversation recall
 - **Auto-Read Responses** — toggle automatic text-to-speech
+
+### Automation & integration
+
+- **URL scheme** — `localmind://ask?prompt=Summarize%20this&agent=Coder` (or `localmind://new`) from Shortcuts, scripts, or other apps
+- **Services menu** — select text in any app → right-click → Services → "Ask LocalMind"
+- See [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) for building signed releases and publishing a Homebrew cask
 
 ## Running Tests
 

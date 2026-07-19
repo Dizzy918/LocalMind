@@ -67,6 +67,7 @@ struct Conversation: Identifiable, Codable, Sendable {
     var temperatureOverride: Double?   // Per-conversation temperature; nil = use the global parameter
     var agentID: UUID?                 // Assigned agent persona; nil = the default assistant
     var autoRouteAgent: Bool = false   // Auto-pick the best agent for each message (overrides agentID)
+    var projectID: UUID?               // Owning project (workspace); nil = loose conversation
     var contextSummary: String?        // Rolling summary of messages that no longer fit the context window
     var summarizedMessageCount: Int = 0 // How many leading messages contextSummary covers
     var branches: [ConversationBranch] = []  // Earlier versions, saved when the user edits/regenerates
@@ -88,6 +89,7 @@ struct Conversation: Identifiable, Codable, Sendable {
         modelOverride: String? = nil,
         temperatureOverride: Double? = nil,
         agentID: UUID? = nil,
+        projectID: UUID? = nil,
         profileID: UUID? = nil,
         createdAt: Date = Date()
     ) {
@@ -104,6 +106,7 @@ struct Conversation: Identifiable, Codable, Sendable {
         self.modelOverride = modelOverride
         self.temperatureOverride = temperatureOverride
         self.agentID = agentID
+        self.projectID = projectID
         self.profileID = profileID
         self.createdAt = createdAt
         self.updatedAt = createdAt
@@ -114,7 +117,7 @@ struct Conversation: Identifiable, Codable, Sendable {
         case id, title, messages, toolType, customToolID, customIconName, emoji
         case isPinned, isArchived, systemPromptOverride, profileID, createdAt, updatedAt
         case modelOverride, temperatureOverride, branches, agentID, autoRouteAgent
-        case contextSummary, summarizedMessageCount
+        case contextSummary, summarizedMessageCount, projectID
     }
 
     init(from decoder: Decoder) throws {
@@ -135,6 +138,7 @@ struct Conversation: Identifiable, Codable, Sendable {
         self.autoRouteAgent = try c.decodeIfPresent(Bool.self, forKey: .autoRouteAgent) ?? false
         self.contextSummary = try c.decodeIfPresent(String.self, forKey: .contextSummary)
         self.summarizedMessageCount = try c.decodeIfPresent(Int.self, forKey: .summarizedMessageCount) ?? 0
+        self.projectID = try c.decodeIfPresent(UUID.self, forKey: .projectID)
         self.branches = try c.decodeIfPresent([ConversationBranch].self, forKey: .branches) ?? []
         self.profileID = try c.decodeIfPresent(UUID.self, forKey: .profileID)
         self.createdAt = try c.decode(Date.self, forKey: .createdAt)
@@ -159,6 +163,7 @@ struct Conversation: Identifiable, Codable, Sendable {
         if autoRouteAgent { try c.encode(autoRouteAgent, forKey: .autoRouteAgent) }
         try c.encodeIfPresent(contextSummary, forKey: .contextSummary)
         if summarizedMessageCount > 0 { try c.encode(summarizedMessageCount, forKey: .summarizedMessageCount) }
+        try c.encodeIfPresent(projectID, forKey: .projectID)
         if !branches.isEmpty { try c.encode(branches, forKey: .branches) }
         try c.encodeIfPresent(profileID, forKey: .profileID)
         try c.encode(createdAt, forKey: .createdAt)

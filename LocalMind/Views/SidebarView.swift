@@ -11,6 +11,7 @@ import UniformTypeIdentifiers
 enum SidebarSelection: Hashable {
     case chat
     case customTool(String)
+    case project(UUID)
 }
 
 /// Main sidebar with tool navigation and conversation history
@@ -35,6 +36,8 @@ struct SidebarView: View {
     @State private var mergeSource: Conversation?
     @State private var showingProfileMenu = false
     @State private var showingHelp = false
+    @State private var editingProject: Project?
+    @State private var isCreatingProject = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -46,23 +49,70 @@ struct SidebarView: View {
             
             // Tool Selector
             toolSelector
-            
+
             Divider()
                 .overlay(AppTheme.Colors.divider)
-            
+
+            // Projects (workspaces with defaults)
+            projectsSection
+
             // Conversation History
             conversationList
-            
+
             Spacer()
-            
+
+            // Parallel-generation control: several chats streaming at once is
+            // easy to lose track of — surface the count with a kill switch.
+            if !isCompact, generationService.activeGenerationCount >= 2 {
+                HStack(spacing: AppTheme.Spacing.sm) {
+                    PulsingDot(size: 6)
+                    Text("\(generationService.activeGenerationCount) chats generating")
+                        .font(AppTheme.Typography.captionSecondary)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                    Spacer()
+                    Button("Stop all") {
+                        generationService.stopAll()
+                    }
+                    .controlSize(.small)
+                }
+                .padding(.horizontal, AppTheme.Spacing.lg)
+                .padding(.vertical, AppTheme.Spacing.xs)
+            }
+
             Divider()
                 .overlay(AppTheme.Colors.divider)
-            
+
             // Status Footer
             statusFooter
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(AppTheme.Colors.sidebarBackground)
+        .sheet(isPresented: $isCreatingProject) {
+            ProjectEditorView(
+                project: nil,
+                dataStore: dataStore,
+                onSave: { project in
+                    dataStore.saveProject(project)
+                    isCreatingProject = false
+                    withAnimation(AppTheme.Animations.quick) {
+                        selectedSelection = .project(project.id)
+                        selectedConversationID = nil
+                    }
+                },
+                onCancel: { isCreatingProject = false }
+            )
+        }
+        .sheet(item: $editingProject) { project in
+            ProjectEditorView(
+                project: project,
+                dataStore: dataStore,
+                onSave: { updated in
+                    dataStore.saveProject(updated)
+                    editingProject = nil
+                },
+                onCancel: { editingProject = nil }
+            )
+        }
         .sheet(item: $mergeSource) { source in
             MergeTargetPicker(
                 source: source,
@@ -172,6 +222,101 @@ struct SidebarView: View {
         .padding(.bottom, AppTheme.Spacing.md)
     }
     
+    // MARK: - Projects
+
+    @ViewBuilder
+    private var projectsSection: some View {
+        if !dataStore.projects.isEmpty || !isCompact {
+            VStack(spacing: AppTheme.Spacing.xs) {
+                if !isCompact {
+                    HStack {
+                        Text("PROJECTS")
+                            .font(AppTheme.Typography.captionSecondary)
+                            .foregroundStyle(AppTheme.Colors.textTertiary)
+                            .tracking(1.2)
+                        Spacer()
+                        HoverIconButton(
+                            systemName: "plus",
+                            size: 11,
+                            baseColor: AppTheme.Colors.textTertiary,
+                            hoverColor: AppTheme.Colors.accentPrimary,
+                            helpText: "New project"
+                        ) {
+                            isCreatingProject = true
+                        }
+                    }
+                    .padding(.horizontal, AppTheme.Spacing.lg)
+                    .padding(.top, AppTheme.Spacing.md)
+                }
+
+                ForEach(dataStore.projects) { project in
+                    projectRow(project)
+                        .padding(.horizontal, AppTheme.Spacing.sm)
+                }
+            }
+            .padding(.bottom, dataStore.projects.isEmpty ? 0 : AppTheme.Spacing.sm)
+
+            if !dataStore.projects.isEmpty {
+                Divider().overlay(AppTheme.Colors.divider)
+            }
+        }
+    }
+
+    private func projectRow(_ project: Project) -> some View {
+        let isSelected = selectedSelection == .project(project.id)
+        return Button {
+            withAnimation(AppTheme.Animations.spring) {
+                selectedSelection = .project(project.id)
+                selectedConversationID = nil
+            }
+        } label: {
+            HStack(spacing: isCompact ? 0 : AppTheme.Spacing.md) {
+                Text(project.emoji)
+                    .font(.system(size: 14))
+                    .frame(width: 28, height: 24)
+                if !isCompact {
+                    Text(project.name)
+                        .font(AppTheme.Typography.callout)
+                        .foregroundStyle(isSelected ? AppTheme.Colors.textPrimary : AppTheme.Colors.textSecondary)
+                        .lineLimit(1)
+                    Spacer()
+                    let count = dataStore.conversationsForSelection(.project(project.id)).count
+                    if count > 0 {
+                        Text("\(count)")
+                            .font(AppTheme.Typography.captionSecondary)
+                            .foregroundStyle(AppTheme.Colors.textTertiary)
+                    }
+                }
+            }
+            .padding(.horizontal, isCompact ? AppTheme.Spacing.xs : AppTheme.Spacing.md)
+            .padding(.vertical, 5)
+            .background {
+                RoundedRectangle(cornerRadius: AppTheme.Dimensions.cornerRadiusSmall)
+                    .fill(isSelected ? AppTheme.Colors.accentPrimary.opacity(0.12) : Color.clear)
+            }
+            .contentShape(Rectangle())
+            .help(isCompact ? project.name : "")
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button {
+                editingProject = project
+            } label: {
+                Label("Edit Project…", systemImage: "pencil")
+            }
+            Divider()
+            Button(role: .destructive) {
+                if selectedSelection == .project(project.id) {
+                    selectedSelection = .chat
+                    selectedConversationID = nil
+                }
+                dataStore.deleteProject(project)
+            } label: {
+                Label("Delete Project", systemImage: "trash")
+            }
+        }
+    }
+
     // MARK: - Conversation List
     
     private var conversationList: some View {

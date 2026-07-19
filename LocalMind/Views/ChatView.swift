@@ -70,6 +70,22 @@ struct ChatView: View {
     // Agent Team — run several agents against one prompt in parallel
     @State private var showingAgentTeam = false
 
+    // Pipeline runner launched from the agent menu
+    @State private var runningPipeline: AgentPipeline?
+
+    // Hands-free voice conversation
+    @State private var showingVoiceMode = false
+
+    // In-conversation search (⌘F)
+    @State private var isChatSearching = false
+    @State private var chatSearchQuery = ""
+    @State private var currentMatchIndex = 0
+    @FocusState private var isChatSearchFocused: Bool
+
+    // Prompt library (saved snippets, inserted from the input bar)
+    @State private var showingSnippets = false
+    @State private var newSnippetTitle = ""
+
     @Environment(\.openSettings) private var openSettingsAction
 
     // One-time onboarding hint shown on the empty welcome screen.
@@ -92,6 +108,11 @@ struct ChatView: View {
             Button("") { pasteImageFromClipboard() }
                 .keyboardShortcut("v", modifiers: .command)
                 .opacity(0)
+
+            // Cmd+F opens in-conversation search
+            Button("") { openChatSearch() }
+                .keyboardShortcut("f", modifiers: .command)
+                .opacity(0)
             
             VStack(spacing: 0) {
                 if conversation.messages.isEmpty && !isStreaming {
@@ -100,6 +121,10 @@ struct ChatView: View {
                 } else {
                     chatHeader
                     Divider().overlay(AppTheme.Colors.divider)
+                    if isChatSearching {
+                        chatSearchBar
+                        Divider().overlay(AppTheme.Colors.divider)
+                    }
                     messagesArea
                     inputBar
                 }
@@ -248,6 +273,24 @@ struct ChatView: View {
                 onClose: { showingAgentTeam = false }
             )
         }
+        .sheet(item: $runningPipeline) { pipeline in
+            PipelineRunnerView(
+                pipeline: pipeline,
+                aiManager: aiManager,
+                dataStore: dataStore,
+                onClose: { runningPipeline = nil }
+            )
+        }
+        .sheet(isPresented: $showingVoiceMode) {
+            VoiceModeView(
+                aiManager: aiManager,
+                generationService: generationService,
+                voiceManager: voiceManager,
+                conversation: $conversation,
+                dataStore: dataStore,
+                onClose: { showingVoiceMode = false }
+            )
+        }
     }
 
     // MARK: - Agents
@@ -295,6 +338,18 @@ struct ChatView: View {
                 showingAgentTeam = true
             } label: {
                 Label("Ask multiple agents…", systemImage: "person.3")
+            }
+
+            if !dataStore.pipelines.isEmpty {
+                Menu {
+                    ForEach(dataStore.pipelines) { pipeline in
+                        Button("\(pipeline.emoji) \(pipeline.name)") {
+                            runningPipeline = pipeline
+                        }
+                    }
+                } label: {
+                    Label("Run pipeline", systemImage: "link")
+                }
             }
 
             Button {
@@ -386,6 +441,17 @@ struct ChatView: View {
 
             // Agent persona for this conversation.
             agentPicker
+
+            // Hands-free voice conversation.
+            Button {
+                showingVoiceMode = true
+            } label: {
+                Image(systemName: "waveform.circle")
+                    .font(.system(size: 14))
+                    .foregroundStyle(AppTheme.Colors.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .help("Hands-free voice mode")
 
             // Knowledge base — "chat with your documents". Filled when active.
             Button {
@@ -647,6 +713,113 @@ struct ChatView: View {
         )
     }
 
+    // MARK: - In-conversation Search
+
+    /// IDs of messages containing the search text, in conversation order.
+    private var searchMatches: [UUID] {
+        let query = chatSearchQuery.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return [] }
+        return conversation.messages
+            .filter { $0.content.localizedCaseInsensitiveContains(query) }
+            .map(\.id)
+    }
+
+    private var currentMatchID: UUID? {
+        let matches = searchMatches
+        guard !matches.isEmpty else { return nil }
+        return matches[min(currentMatchIndex, matches.count - 1)]
+    }
+
+    private var chatSearchBar: some View {
+        HStack(spacing: AppTheme.Spacing.sm) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 12))
+                .foregroundStyle(AppTheme.Colors.textTertiary)
+
+            TextField("Find in conversation…", text: $chatSearchQuery)
+                .textFieldStyle(.plain)
+                .font(AppTheme.Typography.caption)
+                .focused($isChatSearchFocused)
+                .onKeyPress(.escape) {
+                    closeChatSearch()
+                    return .handled
+                }
+                .onSubmit { stepMatch(1) }
+                .onChange(of: chatSearchQuery) { _, _ in
+                    currentMatchIndex = 0
+                    jumpToCurrentMatch()
+                }
+
+            if !searchMatches.isEmpty {
+                Text("\(min(currentMatchIndex, searchMatches.count - 1) + 1) of \(searchMatches.count)")
+                    .font(AppTheme.Typography.captionSecondary)
+                    .foregroundStyle(AppTheme.Colors.textTertiary)
+                    .monospacedDigit()
+            } else if !chatSearchQuery.trimmingCharacters(in: .whitespaces).isEmpty {
+                Text("No matches")
+                    .font(AppTheme.Typography.captionSecondary)
+                    .foregroundStyle(AppTheme.Colors.textTertiary)
+            }
+
+            Button { stepMatch(-1) } label: {
+                Image(systemName: "chevron.up").font(.system(size: 11, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(AppTheme.Colors.textTertiary)
+            .disabled(searchMatches.isEmpty)
+
+            Button { stepMatch(1) } label: {
+                Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(AppTheme.Colors.textTertiary)
+            .disabled(searchMatches.isEmpty)
+
+            Button { closeChatSearch() } label: {
+                Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(AppTheme.Colors.textTertiary)
+            .help("Close search (Esc)")
+        }
+        .padding(.horizontal, AppTheme.Spacing.xl)
+        .padding(.vertical, AppTheme.Spacing.sm)
+        .background(AppTheme.Colors.backgroundSecondary.opacity(0.4))
+    }
+
+    private func openChatSearch() {
+        guard !conversation.messages.isEmpty else { return }
+        withAnimation(AppTheme.Animations.quick) { isChatSearching = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            isChatSearchFocused = true
+        }
+    }
+
+    private func closeChatSearch() {
+        withAnimation(AppTheme.Animations.quick) {
+            isChatSearching = false
+            chatSearchQuery = ""
+            currentMatchIndex = 0
+        }
+        isInputFocused = true
+    }
+
+    /// Cycles to the next/previous match, wrapping at either end.
+    private func stepMatch(_ delta: Int) {
+        let matches = searchMatches
+        guard !matches.isEmpty else { return }
+        let bounded = min(currentMatchIndex, matches.count - 1)
+        currentMatchIndex = ((bounded + delta) % matches.count + matches.count) % matches.count
+        jumpToCurrentMatch()
+    }
+
+    private func jumpToCurrentMatch() {
+        guard let id = currentMatchID else { return }
+        withAnimation(AppTheme.Animations.quick) {
+            scrollProxy?.scrollTo(id, anchor: .center)
+        }
+    }
+
     // MARK: - Messages Area
 
     private var messagesArea: some View {
@@ -665,6 +838,14 @@ struct ChatView: View {
                             onSelectVariant: message.role == .assistant ? { index in selectVariant(for: message, index: index) } : nil
                         )
                         .id(message.id)
+                        .background {
+                            // Spotlight the active search match.
+                            if isChatSearching, currentMatchID == message.id {
+                                RoundedRectangle(cornerRadius: 10)
+                                    .fill(AppTheme.Colors.accentPrimary.opacity(0.08))
+                                    .padding(-6)
+                            }
+                        }
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
                     }
 
@@ -883,6 +1064,16 @@ struct ChatView: View {
                             action: pickFile
                         )
 
+                        HoverIconButton(
+                            systemName: "book",
+                            size: 16,
+                            helpText: "Prompt library",
+                            action: { showingSnippets = true }
+                        )
+                        .popover(isPresented: $showingSnippets, arrowEdge: .top) {
+                            snippetPopover
+                        }
+
                         HStack(spacing: 2) {
                             HoverIconButton(
                                 systemName: voiceManager.isRecording ? "mic.fill" : "mic",
@@ -977,8 +1168,106 @@ struct ChatView: View {
         .background(AppTheme.Colors.backgroundPrimary)
     }
     
+    // MARK: - Prompt Library
+
+    /// Saved prompts, one click from any chat. The current draft can be
+    /// captured as a new snippet without leaving the popover.
+    private var snippetPopover: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+            Text("Prompt Library")
+                .font(AppTheme.Typography.headline)
+
+            if dataStore.promptSnippets.isEmpty {
+                Text("Save prompts you reuse — they'll be one click away in any chat.")
+                    .font(AppTheme.Typography.captionSecondary)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ScrollView {
+                    VStack(spacing: 4) {
+                        ForEach(dataStore.promptSnippets) { snippet in
+                            HStack(spacing: AppTheme.Spacing.sm) {
+                                Button {
+                                    insertSnippet(snippet)
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(snippet.title)
+                                            .font(.system(size: 12, weight: .semibold))
+                                            .foregroundStyle(AppTheme.Colors.textPrimary)
+                                            .lineLimit(1)
+                                        Text(snippet.text)
+                                            .font(AppTheme.Typography.captionSecondary)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .help(snippet.text)
+
+                                Button {
+                                    dataStore.deletePromptSnippet(snippet)
+                                } label: {
+                                    Image(systemName: "trash").font(.system(size: 10))
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.secondary)
+                            }
+                            .padding(6)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(AppTheme.Colors.backgroundSecondary.opacity(0.5))
+                            )
+                        }
+                    }
+                }
+                .frame(maxHeight: 220)
+            }
+
+            Divider()
+
+            if inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text("Type something in the message box to save it here.")
+                    .font(AppTheme.Typography.captionSecondary)
+                    .foregroundStyle(.tertiary)
+            } else {
+                HStack(spacing: AppTheme.Spacing.sm) {
+                    TextField("Title (optional)", text: $newSnippetTitle)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption)
+                    Button("Save draft") {
+                        let trimmedTitle = newSnippetTitle.trimmingCharacters(in: .whitespaces)
+                        let fallback = String(inputText.prefix(30)) + (inputText.count > 30 ? "…" : "")
+                        dataStore.savePromptSnippet(PromptSnippet(
+                            title: trimmedTitle.isEmpty ? fallback : trimmedTitle,
+                            text: inputText
+                        ))
+                        newSnippetTitle = ""
+                    }
+                    .controlSize(.small)
+                }
+                Text("Saves what's currently typed in the message box.")
+                    .font(AppTheme.Typography.captionSecondary)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(AppTheme.Spacing.lg)
+        .frame(width: 320)
+    }
+
+    private func insertSnippet(_ snippet: PromptSnippet) {
+        if inputText.isEmpty {
+            inputText = snippet.text
+        } else {
+            inputText += (inputText.hasSuffix(" ") || inputText.hasSuffix("\n") ? "" : " ") + snippet.text
+        }
+        showingSnippets = false
+        isInputFocused = true
+    }
+
     // MARK: - Actions
-    
+
     private var isVisionCompatible: Bool {
         if aiManager.currentBackend == .ollama {
             return aiManager.selectedOllamaModel.lowercased().contains("llava")

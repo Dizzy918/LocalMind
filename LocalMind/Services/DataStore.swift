@@ -27,6 +27,9 @@ final class DataStore {
     private(set) var focusSessions: [FocusSession] = []
     private(set) var customTools: [CustomTool] = []
     private(set) var agents: [Agent] = []
+    private(set) var promptSnippets: [PromptSnippet] = []
+    private(set) var projects: [Project] = []
+    private(set) var pipelines: [AgentPipeline] = []
 
     private let fileManager = FileManager.default
     let baseDirectory: URL
@@ -87,7 +90,7 @@ final class DataStore {
     // MARK: - Directory Management
 
     private func ensureDirectories() {
-        let dirs = ["conversations", "focus_sessions", "custom_tools", "agents"]
+        let dirs = ["conversations", "focus_sessions", "custom_tools", "agents", "prompt_snippets", "projects", "pipelines"]
         for dir in dirs {
             let path = baseDirectory.appendingPathComponent(dir, isDirectory: true)
             try? fileManager.createDirectory(at: path, withIntermediateDirectories: true)
@@ -278,9 +281,12 @@ final class DataStore {
             .filter {
                 switch selection {
                 case .chat:
-                    return $0.toolType == .chat && $0.customToolID == nil
+                    // Loose chats only — project conversations live under their project.
+                    return $0.toolType == .chat && $0.customToolID == nil && $0.projectID == nil
                 case .customTool(let id):
                     return $0.toolType == .chat && $0.customToolID == id
+                case .project(let id):
+                    return $0.projectID == id
                 }
             }
             .sorted { lhs, rhs in
@@ -310,9 +316,11 @@ final class DataStore {
             .filter {
                 switch selection {
                 case .chat:
-                    return $0.toolType == .chat && $0.customToolID == nil
+                    return $0.toolType == .chat && $0.customToolID == nil && $0.projectID == nil
                 case .customTool(let id):
                     return $0.toolType == .chat && $0.customToolID == id
+                case .project(let id):
+                    return $0.projectID == id
                 }
             }
             .sorted { $0.updatedAt > $1.updatedAt }
@@ -462,6 +470,12 @@ final class DataStore {
         customTools = loadItems(from: "custom_tools")
         agents = loadItems(from: "agents")
         agents.sort { $0.createdAt < $1.createdAt }
+        promptSnippets = loadItems(from: "prompt_snippets")
+        promptSnippets.sort { $0.createdAt < $1.createdAt }
+        projects = loadItems(from: "projects")
+        projects.sort { $0.createdAt < $1.createdAt }
+        pipelines = loadItems(from: "pipelines")
+        pipelines.sort { $0.createdAt < $1.createdAt }
     }
 
     private func loadConversations() -> [Conversation] {
@@ -604,6 +618,91 @@ final class DataStore {
             saveAgent(agent)
         }
         return imported.count
+    }
+
+    // MARK: - Projects
+
+    func saveProject(_ project: Project) {
+        if let index = projects.firstIndex(where: { $0.id == project.id }) {
+            projects[index] = project
+        } else {
+            projects.append(project)
+        }
+        let url = baseDirectory
+            .appendingPathComponent("projects")
+            .appendingPathComponent("\(project.id.uuidString).json")
+        if let data = try? JSONEncoder().encode(project) {
+            try? data.write(to: url)
+        }
+    }
+
+    /// Deletes a project. Its conversations aren't deleted — they become
+    /// loose conversations again (visible under Chat).
+    func deleteProject(_ project: Project) {
+        projects.removeAll { $0.id == project.id }
+        let url = baseDirectory
+            .appendingPathComponent("projects")
+            .appendingPathComponent("\(project.id.uuidString).json")
+        try? fileManager.removeItem(at: url)
+
+        for conversation in conversations where conversation.projectID == project.id {
+            var freed = conversation
+            freed.projectID = nil
+            saveConversation(freed)
+        }
+    }
+
+    func project(withID id: UUID?) -> Project? {
+        guard let id else { return nil }
+        return projects.first { $0.id == id }
+    }
+
+    // MARK: - Pipelines
+
+    func savePipeline(_ pipeline: AgentPipeline) {
+        if let index = pipelines.firstIndex(where: { $0.id == pipeline.id }) {
+            pipelines[index] = pipeline
+        } else {
+            pipelines.append(pipeline)
+        }
+        let url = baseDirectory
+            .appendingPathComponent("pipelines")
+            .appendingPathComponent("\(pipeline.id.uuidString).json")
+        if let data = try? JSONEncoder().encode(pipeline) {
+            try? data.write(to: url)
+        }
+    }
+
+    func deletePipeline(_ pipeline: AgentPipeline) {
+        pipelines.removeAll { $0.id == pipeline.id }
+        let url = baseDirectory
+            .appendingPathComponent("pipelines")
+            .appendingPathComponent("\(pipeline.id.uuidString).json")
+        try? fileManager.removeItem(at: url)
+    }
+
+    // MARK: - Prompt Snippets
+
+    func savePromptSnippet(_ snippet: PromptSnippet) {
+        if let index = promptSnippets.firstIndex(where: { $0.id == snippet.id }) {
+            promptSnippets[index] = snippet
+        } else {
+            promptSnippets.append(snippet)
+        }
+        let url = baseDirectory
+            .appendingPathComponent("prompt_snippets")
+            .appendingPathComponent("\(snippet.id.uuidString).json")
+        if let data = try? JSONEncoder().encode(snippet) {
+            try? data.write(to: url)
+        }
+    }
+
+    func deletePromptSnippet(_ snippet: PromptSnippet) {
+        promptSnippets.removeAll { $0.id == snippet.id }
+        let url = baseDirectory
+            .appendingPathComponent("prompt_snippets")
+            .appendingPathComponent("\(snippet.id.uuidString).json")
+        try? fileManager.removeItem(at: url)
     }
 
     /// Seeds the starter personas exactly once, so the Agents feature isn't an

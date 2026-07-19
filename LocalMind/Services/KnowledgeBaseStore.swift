@@ -15,6 +15,8 @@ import Foundation
 import CoreServices
 #if os(macOS)
 import PDFKit
+import Vision
+import AppKit
 #endif
 
 struct KnowledgeChunk: Codable, Identifiable, Sendable {
@@ -55,10 +57,25 @@ private struct KnowledgeArchive: Codable {
 // MARK: - Document Importing
 
 /// File collection + text extraction shared by manual imports and
-/// watched-folder syncing.
-enum DocumentImporter {
-    static let supportedExtensions: Set<String> =
-        ["pdf", "txt", "md", "markdown", "text", "csv", "tsv", "json", "log", "rtf"]
+/// watched-folder syncing. Handles plain text, PDFs (with on-device OCR
+/// fallback for scans), Word/EPUB archives, HTML, RTF, images (OCR), and
+/// common source-code files.
+///
+/// `nonisolated` opts out of the module's MainActor default so extraction can
+/// run on a background thread — OCRing a 50-page scan or waiting on `unzip`
+/// would beachball the app from the main actor.
+nonisolated enum DocumentImporter {
+    static let supportedExtensions: Set<String> = [
+        // Plain text & data
+        "txt", "md", "markdown", "text", "csv", "tsv", "json", "log",
+        // Documents
+        "pdf", "rtf", "docx", "epub", "html", "htm", "xml",
+        // Images (indexed via on-device OCR)
+        "png", "jpg", "jpeg", "heic", "tiff", "webp", "bmp",
+        // Source code
+        "swift", "py", "js", "ts", "tsx", "jsx", "java", "c", "cpp", "h", "hpp",
+        "rb", "go", "rs", "kt", "sh", "zsh", "yaml", "yml", "toml", "css", "scss", "php", "sql"
+    ]
 
     /// Flattens a selection of files and folders into supported document URLs.
     static func collectSupportedFiles(from urls: [URL]) -> [URL] {
@@ -81,16 +98,159 @@ enum DocumentImporter {
         return result
     }
 
+    /// `extractText` on a background thread. Import paths run on the main
+    /// actor (the store is UI state), but OCR and archive expansion are far
+    /// too slow to do there — this is the variant they should call.
+    static func extractTextInBackground(from url: URL) async -> String? {
+        await Task.detached(priority: .utility) {
+            extractText(from: url)
+        }.value
+    }
+
     static func extractText(from url: URL) -> String? {
+        let ext = url.pathExtension.lowercased()
         #if os(macOS)
-        if url.pathExtension.lowercased() == "pdf" {
+        switch ext {
+        case "pdf":
             guard let document = PDFDocument(url: url) else { return nil }
-            return (0..<document.pageCount)
+            let native = (0..<document.pageCount)
                 .compactMap { document.page(at: $0)?.string }
                 .joined(separator: "\n")
+            // Almost no embedded text in a multi-page PDF = a scan. Fall back
+            // to on-device OCR so scanned documents index like real ones.
+            if native.trimmingCharacters(in: .whitespacesAndNewlines).count >= 32 {
+                return native
+            }
+            return ocrPDF(document) ?? (native.isEmpty ? nil : native)
+
+        case "png", "jpg", "jpeg", "heic", "tiff", "webp", "bmp":
+            guard let image = NSImage(contentsOf: url),
+                  let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+            return ocrText(from: cgImage)
+
+        case "docx":
+            // .docx is a zip; the text lives in word/document.xml.
+            guard let xml = unzippedContents(of: url, matching: { $0.hasSuffix("word/document.xml") })?.first else { return nil }
+            return strippingMarkup(xml, paragraphBreaks: ["</w:p>"])
+
+        case "epub":
+            // .epub is a zip of (x)html chapters.
+            let chapters = unzippedContents(of: url, matching: {
+                $0.hasSuffix(".xhtml") || $0.hasSuffix(".html") || $0.hasSuffix(".htm")
+            }) ?? []
+            let text = chapters
+                .compactMap { strippingMarkup($0, paragraphBreaks: ["</p>", "</P>", "<br/>", "<br>"]) }
+                .joined(separator: "\n\n")
+            return text.isEmpty ? nil : text
+
+        case "html", "htm":
+            guard let raw = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+            return strippingMarkup(raw, paragraphBreaks: ["</p>", "</P>", "<br/>", "<br>", "</div>", "</h1>", "</h2>", "</h3>", "</li>"])
+
+        case "rtf":
+            guard let data = try? Data(contentsOf: url),
+                  let attributed = NSAttributedString(rtf: data, documentAttributes: nil) else { return nil }
+            return attributed.string
+
+        default:
+            return try? String(contentsOf: url, encoding: .utf8)
         }
-        #endif
+        #else
         return try? String(contentsOf: url, encoding: .utf8)
+        #endif
+    }
+
+    #if os(macOS)
+    // MARK: OCR (on-device, Vision framework)
+
+    private static func ocrText(from image: CGImage) -> String? {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        let handler = VNImageRequestHandler(cgImage: image)
+        try? handler.perform([request])
+        let lines = request.results?.compactMap { $0.topCandidates(1).first?.string } ?? []
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
+    }
+
+    /// OCRs a (scanned) PDF page by page, capped so a 1000-page scan can't
+    /// stall an import for an hour.
+    private static func ocrPDF(_ document: PDFDocument, maxPages: Int = 50) -> String? {
+        var pages: [String] = []
+        for index in 0..<min(document.pageCount, maxPages) {
+            guard let page = document.page(at: index) else { continue }
+            let bounds = page.bounds(for: .mediaBox)
+            let size = CGSize(width: bounds.width * 2, height: bounds.height * 2)
+            let thumbnail = page.thumbnail(of: size, for: .mediaBox)
+            guard let cgImage = thumbnail.cgImage(forProposedRect: nil, context: nil, hints: nil) else { continue }
+            if let text = ocrText(from: cgImage) {
+                pages.append(text)
+            }
+        }
+        return pages.isEmpty ? nil : pages.joined(separator: "\n\n")
+    }
+
+    // MARK: Archive formats (.docx, .epub)
+
+    /// Extracts a zip-based document with the system unzip and returns the
+    /// contents of entries whose (lowercased) path matches, in path order.
+    private static func unzippedContents(of url: URL, matching predicate: (String) -> Bool) -> [String]? {
+        let workDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("localmind-unzip-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: workDir) }
+        try? FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+        process.arguments = ["-qq", "-o", url.path, "-d", workDir.path]
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return nil
+        }
+        guard process.terminationStatus == 0,
+              let enumerator = FileManager.default.enumerator(at: workDir, includingPropertiesForKeys: nil) else { return nil }
+
+        var matches: [URL] = []
+        for case let file as URL in enumerator where predicate(file.path.lowercased()) {
+            matches.append(file)
+        }
+        matches.sort { $0.path < $1.path }
+        let contents = matches.compactMap { try? String(contentsOf: $0, encoding: .utf8) }
+        return contents.isEmpty ? nil : contents
+    }
+    #endif
+
+    /// Strips XML/HTML markup down to readable text: paragraph-ish closing
+    /// tags become newlines, remaining tags are dropped, entities decoded,
+    /// and whitespace collapsed.
+    static func strippingMarkup(_ markup: String, paragraphBreaks: [String]) -> String? {
+        var text = markup
+        // Scripts and styles are noise, not content.
+        text = text.replacingOccurrences(
+            of: "(?is)<(script|style)[^>]*>.*?</\\1>",
+            with: " ",
+            options: .regularExpression
+        )
+        for tag in paragraphBreaks {
+            text = text.replacingOccurrences(of: tag, with: tag + "\n")
+        }
+        text = text.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+        let entities = [
+            "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": "\"",
+            "&#39;": "'", "&apos;": "'", "&nbsp;": " ", "&mdash;": "—", "&ndash;": "–"
+        ]
+        for (entity, replacement) in entities {
+            text = text.replacingOccurrences(of: entity, with: replacement)
+        }
+        text = text.replacingOccurrences(of: "[ \\t]{2,}", with: " ", options: .regularExpression)
+        text = text.replacingOccurrences(of: "\\s*\\n\\s*", with: "\n", options: .regularExpression)
+        text = text.replacingOccurrences(of: "\\n{3,}", with: "\n\n", options: .regularExpression)
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 
@@ -338,7 +498,7 @@ final class KnowledgeBaseStore {
                     guard let modified, let known = existing.fileModifiedAt, modified > known else { continue }
                     removeDocument(existing) // changed on disk → re-import below
                 }
-                guard let text = DocumentImporter.extractText(from: file),
+                guard let text = await DocumentImporter.extractTextInBackground(from: file),
                       !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
                 await addDocument(
                     name: file.lastPathComponent,

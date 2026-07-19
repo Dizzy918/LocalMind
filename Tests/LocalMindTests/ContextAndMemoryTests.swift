@@ -269,3 +269,62 @@ final class NewFieldPersistenceTests: XCTestCase {
         XCTAssertNil(OllamaPullProgress(status: "odd", completed: 1, total: 0).fraction)
     }
 }
+
+// MARK: - Prompt snippets & MCP catalog
+
+final class PromptSnippetAndCatalogTests: XCTestCase {
+
+    var dataStore: DataStore!
+    var testDir: URL!
+
+    override func setUp() {
+        super.setUp()
+        testDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LocalMindTests-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: testDir, withIntermediateDirectories: true)
+        dataStore = DataStore(baseDirectoryOverride: testDir)
+    }
+
+    override func tearDown() {
+        try? FileManager.default.removeItem(at: testDir)
+        dataStore = nil
+        super.tearDown()
+    }
+
+    func testSnippetSaveUpdateDeletePersist() {
+        var snippet = PromptSnippet(title: "Email intro", text: "Write a professional email about")
+        dataStore.savePromptSnippet(snippet)
+        XCTAssertEqual(dataStore.promptSnippets.count, 1)
+
+        snippet.text = "Write a friendly email about"
+        dataStore.savePromptSnippet(snippet)
+        XCTAssertEqual(dataStore.promptSnippets.count, 1, "same ID must update, not duplicate")
+        XCTAssertEqual(dataStore.promptSnippets.first?.text, "Write a friendly email about")
+
+        // Survives a store reload.
+        let reloaded = DataStore(baseDirectoryOverride: testDir)
+        XCTAssertEqual(reloaded.promptSnippets.first?.title, "Email intro")
+
+        dataStore.deletePromptSnippet(snippet)
+        XCTAssertTrue(dataStore.promptSnippets.isEmpty)
+        let reloadedAfterDelete = DataStore(baseDirectoryOverride: testDir)
+        XCTAssertTrue(reloadedAfterDelete.promptSnippets.isEmpty)
+    }
+
+    func testCatalogEntriesAreWellFormed() {
+        let entries = MCPCatalog.all
+        XCTAssertGreaterThanOrEqual(entries.count, 16)
+        // IDs and display names must be unique — they key the install UI.
+        XCTAssertEqual(Set(entries.map(\.id)).count, entries.count)
+        XCTAssertEqual(Set(entries.map(\.name)).count, entries.count)
+        for entry in entries {
+            XCTAssertFalse(entry.description.isEmpty, "\(entry.id) needs a description")
+            if case let .stdio(command, args, _) = entry.template.transport {
+                XCTAssertFalse(command.isEmpty)
+                XCTAssertFalse(args.isEmpty, "\(entry.id) should launch a package")
+            } else {
+                XCTFail("\(entry.id): catalog entries should be stdio-launched")
+            }
+        }
+    }
+}

@@ -219,6 +219,10 @@ struct ContentView: View {
             newConversation = Conversation(toolType: .chat)
         case .customTool(let id):
             newConversation = Conversation(toolType: .chat, customToolID: id)
+        case .project(let id):
+            // Born into the project — it inherits the project's agent,
+            // collections, and context at generation time.
+            newConversation = Conversation(toolType: .chat, projectID: id)
         }
         draftConversation = newConversation
         selectedConversationID = newConversation.id

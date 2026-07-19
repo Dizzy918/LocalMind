@@ -51,10 +51,15 @@ class BubbleWindowController: NSWindowController {
         fatalError("init(coder:) has not been implemented")
     }
     
-    func setup(aiManager: AIServiceManager, dataStore: DataStore) {
-        let rootView = BubbleView(aiManager: aiManager, dataStore: dataStore, onClose: { [weak self] in
-            self?.hide()
-        })
+    func setup(aiManager: AIServiceManager, dataStore: DataStore, generationService: ChatGenerationService) {
+        let rootView = BubbleView(
+            aiManager: aiManager,
+            dataStore: dataStore,
+            generationService: generationService,
+            onClose: { [weak self] in
+                self?.hide()
+            }
+        )
         window?.contentView = NSHostingView(rootView: rootView)
     }
     

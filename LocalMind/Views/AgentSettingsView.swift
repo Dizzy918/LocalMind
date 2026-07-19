@@ -18,6 +18,9 @@ struct AgentSettingsView: View {
     @State private var editingAgent: Agent?
     @State private var isCreating = false
     @State private var importStatus = ""
+    @State private var editingPipeline: AgentPipeline?
+    @State private var isCreatingPipeline = false
+    @State private var runningPipeline: AgentPipeline?
 
     var body: some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
@@ -83,6 +86,8 @@ struct AgentSettingsView: View {
                 }
                 .listStyle(.bordered)
             }
+
+            pipelinesSection
         }
         .padding(AppTheme.Spacing.xl)
         .sheet(isPresented: $isCreating) {
@@ -109,6 +114,99 @@ struct AgentSettingsView: View {
                 onCancel: { editingAgent = nil }
             )
         }
+        .sheet(isPresented: $isCreatingPipeline) {
+            PipelineEditorView(
+                pipeline: nil,
+                dataStore: dataStore,
+                onSave: { pipeline in
+                    dataStore.savePipeline(pipeline)
+                    isCreatingPipeline = false
+                },
+                onCancel: { isCreatingPipeline = false }
+            )
+        }
+        .sheet(item: $editingPipeline) { pipeline in
+            PipelineEditorView(
+                pipeline: pipeline,
+                dataStore: dataStore,
+                onSave: { updated in
+                    dataStore.savePipeline(updated)
+                    editingPipeline = nil
+                },
+                onCancel: { editingPipeline = nil }
+            )
+        }
+        .sheet(item: $runningPipeline) { pipeline in
+            PipelineRunnerView(
+                pipeline: pipeline,
+                aiManager: aiManager,
+                dataStore: dataStore,
+                onClose: { runningPipeline = nil }
+            )
+        }
+    }
+
+    // MARK: - Pipelines
+
+    private var pipelinesSection: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Pipelines")
+                        .font(AppTheme.Typography.headline)
+                    Text("Chain agents into reusable workflows — each step transforms the previous step's output.")
+                        .font(AppTheme.Typography.captionSecondary)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    isCreatingPipeline = true
+                } label: {
+                    Label("New Pipeline", systemImage: "plus")
+                }
+                .controlSize(.small)
+            }
+
+            if dataStore.pipelines.isEmpty {
+                Text("No pipelines yet — try Writer drafts → Critic reviews → Writer revises.")
+                    .font(AppTheme.Typography.captionSecondary)
+                    .foregroundStyle(.tertiary)
+            } else {
+                ForEach(dataStore.pipelines) { pipeline in
+                    HStack(spacing: AppTheme.Spacing.md) {
+                        Text(pipeline.emoji)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(pipeline.name)
+                                .font(.system(size: 12, weight: .semibold))
+                            Text(pipelineSummary(pipeline))
+                                .font(AppTheme.Typography.captionSecondary)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                        Button("Run") { runningPipeline = pipeline }
+                            .controlSize(.small)
+                        Button("Edit") { editingPipeline = pipeline }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(AppTheme.Colors.accentPrimary)
+                        Button("Delete", role: .destructive) { dataStore.deletePipeline(pipeline) }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(AppTheme.Colors.accentRed)
+                    }
+                    .padding(AppTheme.Spacing.sm)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(AppTheme.Colors.backgroundSecondary.opacity(0.5))
+                    )
+                }
+            }
+        }
+    }
+
+    private func pipelineSummary(_ pipeline: AgentPipeline) -> String {
+        pipeline.steps.map { step in
+            dataStore.agent(withID: step.agentID)?.name ?? "Assistant"
+        }.joined(separator: " → ")
     }
 
     private func agentRow(_ agent: Agent) -> some View {
