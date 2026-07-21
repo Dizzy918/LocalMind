@@ -141,6 +141,30 @@ enum AppTheme {
         static let smooth = Animation.easeInOut(duration: 0.35)
         static let spring = Animation.spring(response: 0.4, dampingFraction: 0.8)
         static let bouncy = Animation.spring(response: 0.35, dampingFraction: 0.6)
+
+        // MARK: Native-feel curves
+        //
+        // AppKit's own panel and sidebar reveals are critically damped — they
+        // settle without overshoot. A bouncy spring on a large surface like a
+        // sidebar reads as a toy; the wobble is very visible at 260pt of travel.
+        // These three are tuned to match, and are deliberately separate from the
+        // springs above so tightening one doesn't disturb existing callers.
+
+        /// Sidebar drawer reveal. Critically damped — no overshoot on a surface
+        /// this large.
+        static let drawer = Animation.spring(response: 0.35, dampingFraction: 1.0)
+
+        /// Tabs entering and leaving the strip. Slightly faster than the drawer:
+        /// small surfaces read as sluggish at the same duration.
+        static let tab = Animation.spring(response: 0.28, dampingFraction: 0.9)
+
+        /// The active-tab highlight sliding between tabs. A touch of give here
+        /// is the one place it flatters rather than distracts.
+        static let tabHighlight = Animation.spring(response: 0.3, dampingFraction: 0.82)
+
+        /// Crossfade when swapping the whole chat pane. Kept short — a long fade
+        /// on a full-pane swap reads as lag, not polish.
+        static let paneSwap = Animation.easeInOut(duration: 0.12)
     }
 }
 

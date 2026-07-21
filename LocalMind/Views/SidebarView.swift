@@ -30,6 +30,8 @@ struct SidebarView: View {
 
     @AppStorage("isDarkMode") private var isDarkMode: Bool = true
     @AppStorage("enableGlobalShortcut") private var globalShortcutEnabled: Bool = false
+    @AppStorage(AppLayout.storageKey) private var layoutRaw: String = AppLayout.classic.rawValue
+    private var layout: AppLayout { AppLayout(rawValue: layoutRaw) ?? .classic }
     @State private var searchQuery = ""
     @State private var isSearching = false
     @FocusState private var isSearchFocused: Bool
@@ -160,16 +162,23 @@ struct SidebarView: View {
             }
             
             // Custom Sidebar Toggle Button
-            HoverIconButton(
-                systemName: "sidebar.left",
-                size: isCompact ? 18 : 16,
-                baseColor: isCompact ? AppTheme.Colors.accentPrimary : AppTheme.Colors.textSecondary,
-                hoverColor: isCompact ? AppTheme.Colors.accentPrimary : AppTheme.Colors.textPrimary,
-                helpText: isCompact ? "Expand Sidebar" : "Collapse Sidebar"
-            ) {
-                isCompact.toggle()
+            //
+            // Tab layout owns this control in the tab strip, where it stays put
+            // whether the drawer is open or shut. Keeping a second copy in the
+            // sidebar header would mean two buttons for one piece of state —
+            // and the header's copy disappears with the sidebar it toggles.
+            if layout != .tabbed {
+                HoverIconButton(
+                    systemName: "sidebar.left",
+                    size: isCompact ? 18 : 16,
+                    baseColor: isCompact ? AppTheme.Colors.accentPrimary : AppTheme.Colors.textSecondary,
+                    hoverColor: isCompact ? AppTheme.Colors.accentPrimary : AppTheme.Colors.textPrimary,
+                    helpText: isCompact ? "Expand Sidebar" : "Collapse Sidebar"
+                ) {
+                    isCompact.toggle()
+                }
             }
-            
+
             if isCompact { Spacer(minLength: 0) }
         }
         .padding(.horizontal, isCompact ? AppTheme.Spacing.xs : AppTheme.Spacing.lg)
@@ -730,7 +739,14 @@ struct SidebarView: View {
                 .font(.headline)
 
             VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
-                shortcutRow("⌘N", "New conversation")
+                shortcutRow("⌘N", layout == .tabbed ? "New tab" : "New conversation")
+                // Only advertise the tab bindings where they exist — in the
+                // sidebar layout ⌘W still closes the window.
+                if layout == .tabbed {
+                    shortcutRow("⌘T", "Open conversation…")
+                    shortcutRow("⌘W", "Close tab")
+                    shortcutRow("⇧⌘T", "Reopen closed tab")
+                }
                 shortcutRow("⌘↩", "Send message")
                 shortcutRow("↑ ↓", "Cycle previous prompts")
                 shortcutRow("Esc", "Exit search")

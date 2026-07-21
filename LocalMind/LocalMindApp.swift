@@ -13,6 +13,12 @@ extension Notification.Name {
     /// Posted with a conversation UUID as the object; ContentView selects it.
     /// Used by the Agent Team panel's "Open as chat" to hand off a saved run.
     static let openConversation = Notification.Name("LocalMind.openConversation")
+    /// Posted by ⌘W in the tabbed layout; ContentView closes the active tab.
+    static let closeCurrentTab = Notification.Name("LocalMind.closeCurrentTab")
+    /// Posted by ⇧⌘T; ContentView reopens the most recently closed tab.
+    static let reopenClosedTab = Notification.Name("LocalMind.reopenClosedTab")
+    /// Posted by ⌘T; ContentView raises the searchable conversation picker.
+    static let showTabPicker = Notification.Name("LocalMind.showTabPicker")
 }
 
 /// Receives "Ask LocalMind" from the system Services menu (selected text in
@@ -40,11 +46,25 @@ struct LocalMindApp: App {
     @State private var servicesProvider = ServicesProvider()
     @AppStorage("isDarkMode") private var isDarkMode: Bool = true
     @AppStorage("enableGlobalShortcut") private var enableGlobalShortcut: Bool = false
+    // Drives the File menu's labels — ⌘W closes a tab or the window depending
+    // on the layout, and the menu should say which.
+    @AppStorage(AppLayout.storageKey) private var layoutRaw: String = AppLayout.classic.rawValue
+    private var layout: AppLayout { AppLayout(rawValue: layoutRaw) ?? .classic }
 
     init() {
         // Register the AppStorage default so a fresh install reads `true` here
         // instead of UserDefaults's bool fallback of `false`.
         UserDefaults.standard.register(defaults: ["isDarkMode": true])
+
+        // Always launch with a window.
+        //
+        // With state restoration on, quitting while the main window is closed
+        // makes the next launch restore "no windows" — and because the File
+        // menu's New Window item was replaced by New Conversation, there is no
+        // way to get one back. The app sits running (the MenuBarExtra keeps it
+        // alive) with no UI. Reproduced repeatedly: `open` would activate it
+        // but never produce a window.
+        UserDefaults.standard.register(defaults: ["NSQuitAlwaysKeepsWindows": false])
         let isDark = UserDefaults.standard.bool(forKey: "isDarkMode")
         NSApplication.shared.appearance = NSAppearance(named: isDark ? .darkAqua : .aqua)
 
@@ -194,10 +214,35 @@ struct LocalMindApp: App {
             // The window can't call into ContentView's @State directly, so we
             // bridge through a notification ContentView listens for.
             CommandGroup(replacing: .newItem) {
-                Button("New Conversation") {
+                Button(layout == .tabbed ? "New Tab" : "New Conversation") {
                     NotificationCenter.default.post(name: .newConversation, object: nil)
                 }
                 .keyboardShortcut("n", modifiers: .command)
+
+                // Safari's tab shortcuts. In the sidebar layout ⌘W has to keep
+                // meaning "close the window" — this item sits above the system's
+                // Close item in the File menu, so it wins the binding and has to
+                // hand the action back when there are no tabs to close.
+                Button(layout == .tabbed ? "Close Tab" : "Close Window") {
+                    if AppLayout.current == .tabbed {
+                        NotificationCenter.default.post(name: .closeCurrentTab, object: nil)
+                    } else {
+                        NSApp.keyWindow?.performClose(nil)
+                    }
+                }
+                .keyboardShortcut("w", modifiers: .command)
+
+                if layout == .tabbed {
+                    Button("Open Conversation…") {
+                        NotificationCenter.default.post(name: .showTabPicker, object: nil)
+                    }
+                    .keyboardShortcut("t", modifiers: .command)
+
+                    Button("Reopen Closed Tab") {
+                        NotificationCenter.default.post(name: .reopenClosedTab, object: nil)
+                    }
+                    .keyboardShortcut("t", modifiers: [.command, .shift])
+                }
             }
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates…") {

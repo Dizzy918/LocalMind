@@ -326,6 +326,27 @@ final class DataStore {
             }
     }
 
+    /// Every conversation the active profile can see, newest first, regardless
+    /// of which tool or project it belongs to.
+    ///
+    /// `conversationsForSelection` deliberately scopes to one sidebar section;
+    /// the tab layout needs the flat list — a tab strip spans projects and
+    /// tools, and so do its history menu and tab picker.
+    func conversationsForActiveProfile(includeArchived: Bool = false) -> [Conversation] {
+        let activeID = activeProfileID()
+        return conversations
+            .filter { !$0.messages.isEmpty }
+            .filter { includeArchived || !$0.isArchived }
+            .filter { convo in
+                if let active = activeID {
+                    return convo.profileID == active
+                } else {
+                    return convo.profileID == nil
+                }
+            }
+            .sorted { $0.updatedAt > $1.updatedAt }
+    }
+
     private func activeProfileID() -> UUID? {
         guard let raw = UserDefaults.standard.string(forKey: "activeProfileID") else { return nil }
         return UUID(uuidString: raw)

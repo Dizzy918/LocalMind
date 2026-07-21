@@ -28,6 +28,7 @@ struct SettingsView: View {
     
     // New AppStorage bindings
     @AppStorage("isDarkMode") private var isDarkMode: Bool = true
+    @AppStorage(AppLayout.storageKey) private var layoutRaw: String = AppLayout.classic.rawValue
     @AppStorage("bubbleWindowAlwaysOnTop") private var bubbleWindowAlwaysOnTop: Bool = false
     @AppStorage("autoReadResponses") private var autoReadResponses: Bool = false
     @AppStorage("enableGlobalShortcut") private var enableGlobalShortcut: Bool = false
@@ -128,6 +129,18 @@ struct SettingsView: View {
         Form {
             Section("Appearance") {
                 Toggle("Dark Mode", isOn: $isDarkMode)
+
+                Picker("Layout", selection: $layoutRaw) {
+                    ForEach(AppLayout.allCases) { option in
+                        Label(option.displayName, systemImage: option.icon)
+                            .tag(option.rawValue)
+                    }
+                }
+                .pickerStyle(.inline)
+
+                Text(AppLayout(rawValue: layoutRaw)?.summary ?? "")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             
             Section("Window Behavior") {
