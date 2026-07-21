@@ -49,6 +49,10 @@ struct CustomToolSettingsView: View {
             }
         }
         .padding(AppTheme.Spacing.xl)
+        // Anchor to the top. Without this the VStack sizes to its content and
+        // the Settings TabView centres it vertically — which reads as a bug in
+        // the empty state, where the heading floats in the middle of the pane.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .sheet(isPresented: $showingAddTool) {
             AddCustomToolView(dataStore: dataStore) {
                 showingAddTool = false

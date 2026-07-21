@@ -102,6 +102,8 @@ struct AgentSettingsView: View {
             pipelinesSection
         }
         .padding(AppTheme.Spacing.xl)
+        // Anchor to the top — see the note in CustomToolSettingsView.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .sheet(isPresented: $isCreating) {
             AgentEditorView(
                 agent: nil,
