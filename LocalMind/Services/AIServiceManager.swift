@@ -156,14 +156,24 @@ final class AIServiceManager {
         }
         var results: [AIToolResult] = []
         for call in calls {
+            let started = Date()
             do {
                 let argsData = call.arguments.data(using: .utf8) ?? Data()
                 let args = (try? JSONSerialization.jsonObject(with: argsData) as? [String: Any]) ?? [:]
                 let content = try await mcpService.callTool(name: call.name, arguments: args)
                 let textParts = content.compactMap { $0.text }.joined(separator: "\n")
-                results.append(AIToolResult(toolCallId: call.id, content: textParts.isEmpty ? "(empty result)" : textParts))
+                results.append(AIToolResult(
+                    toolCallId: call.id,
+                    content: textParts.isEmpty ? "(empty result)" : textParts,
+                    seconds: Date().timeIntervalSince(started)
+                ))
             } catch {
-                results.append(AIToolResult(toolCallId: call.id, content: "Error — \(error.localizedDescription)", isError: true))
+                results.append(AIToolResult(
+                    toolCallId: call.id,
+                    content: "Error — \(error.localizedDescription)",
+                    isError: true,
+                    seconds: Date().timeIntervalSince(started)
+                ))
             }
         }
         return results
@@ -179,10 +189,12 @@ final class AIServiceManager {
     /// via the user's approval setting — a denial simply comes back as an error
     /// result the model can react to, so no approval logic lives here.
     ///
-    /// The tool-call/result turns live only in a local working list; only the
-    /// visible text (deltas via `onDelta`, plus a compact `_🔧 name_` marker per
-    /// tool round) is surfaced. Returns the full accumulated visible text
-    /// (including `<think>` blocks) so the caller can compute stats.
+    /// The tool-call/result turns live only in a local working list. What comes
+    /// back is the model's own text with tool markers excluded (so it persists
+    /// as a clean answer), the marker-inclusive text the user actually watched,
+    /// and a `ToolRun` per call for the message's durable transcript. A live
+    /// `_🔧 name_` marker still goes out through `onDelta` so the wait reads as
+    /// productive while a tool is running.
     func streamChatWithTools(
         service: any AIServiceProtocol,
         messages: [ChatMessage],
@@ -193,10 +205,25 @@ final class AIServiceManager {
         maxToolRounds: Int = 5,
         shouldContinue: @escaping () -> Bool = { true },
         onDelta: (String) -> Void
-    ) async throws -> String {
+    ) async throws -> ToolAugmentedAnswer {
         var working = messages
-        var rawText = ""
+        /// One entry per round of model-generated text; joined at the end so
+        /// an answer split across tool rounds reads as paragraphs.
+        var answerSegments: [String] = []
+        var displayText = ""
+        var toolRuns: [ToolRun] = []
         var round = 0
+
+        func answer() -> ToolAugmentedAnswer {
+            ToolAugmentedAnswer(
+                text: answerSegments
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                    .joined(separator: "\n\n"),
+                displayText: displayText,
+                toolRuns: toolRuns
+            )
+        }
 
         while true {
             var turnText = ""
@@ -209,11 +236,14 @@ final class AIServiceManager {
                 parameters: parameters,
                 tools: tools
             ) {
-                if !shouldContinue() { return rawText }
+                if !shouldContinue() {
+                    answerSegments.append(turnText)
+                    return answer()
+                }
                 switch chunk {
                 case .text(let text):
                     turnText += text
-                    rawText += text
+                    displayText += text
                     onDelta(text)
                 case .toolCall(let call):
                     pending.append(call)
@@ -224,37 +254,46 @@ final class AIServiceManager {
                 }
             }
 
+            answerSegments.append(turnText)
+
             // Drop malformed calls (empty names) defensively.
             pending = pending.filter { !$0.name.isEmpty }
 
             // No tools available, none requested, or we've hit the safety cap:
             // this turn is the final answer.
             guard tools != nil, !pending.isEmpty, round < maxToolRounds else {
-                return rawText
+                return answer()
             }
             round += 1
-            if !shouldContinue() { return rawText }
+            if !shouldContinue() { return answer() }
 
             // Record the assistant's tool-call turn so the follow-up round has
-            // coherent context, and show a compact marker of what ran.
+            // coherent context, and show a compact live marker of what ran.
             var assistantTurn = ChatMessage(role: .assistant, content: turnText)
             assistantTurn.toolCalls = pending
             working.append(assistantTurn)
 
             let marker = "\n\n_🔧 \(pending.map(\.name).joined(separator: ", "))_\n\n"
-            rawText += marker
+            displayText += marker
             onDelta(marker)
 
             // Execute (each call is approval-gated inside MCPService.callTool)
             // and feed the results back as tool messages.
             let results = await runToolCalls(pending)
             for (call, result) in zip(pending, results) {
+                toolRuns.append(ToolRun(
+                    name: call.name,
+                    arguments: call.arguments,
+                    result: result.content,
+                    isError: result.isError,
+                    seconds: result.seconds
+                ))
                 var toolMessage = ChatMessage(role: .tool, content: result.content)
                 toolMessage.toolCallID = call.id
                 working.append(toolMessage)
             }
 
-            if !shouldContinue() { return rawText }
+            if !shouldContinue() { return answer() }
             // Loop: stream the model's follow-up turn with the results in context.
         }
     }

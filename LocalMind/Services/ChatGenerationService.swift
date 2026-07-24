@@ -393,7 +393,7 @@ final class ChatGenerationService {
             // feeding results back for a follow-up turn until it answers
             // without tools. The visible text lands in `live` via onDelta.
             // Tool calls are approval-gated downstream in MCPService.callTool.
-            let rawText = try await aiManager.streamChatWithTools(
+            let outcome = try await aiManager.streamChatWithTools(
                 service: service,
                 messages: recentMessages,
                 systemPrompt: systemPrompt,
@@ -405,6 +405,9 @@ final class ChatGenerationService {
                     self.live[conversationID]?.text += delta
                 }
             )
+            // The persisted answer excludes the live tool markers — the
+            // message's tool transcript renders those properly instead.
+            let rawText = outcome.text
 
             // Past the stream everything is gated on cancellation: stop()
             // already appended the partial message and cleared the live state,
@@ -420,13 +423,16 @@ final class ChatGenerationService {
                     assistantMessage.agentName = agent?.name
                     assistantMessage.agentEmoji = agent?.emoji
                     assistantMessage.modelUsed = effectiveModel ?? defaultModelLabel(for: service.backend)
+                    if !outcome.toolRuns.isEmpty {
+                        assistantMessage.toolRuns = outcome.toolRuns
+                    }
 
                     // Performance stats: reasoning tokens were generated too,
-                    // so throughput is measured over the raw stream.
+                    // so throughput is measured over everything streamed.
                     let seconds = Date().timeIntervalSince(generationStart)
                     assistantMessage.generationSeconds = seconds
                     if seconds > 0.2 {
-                        assistantMessage.tokensPerSecond = Double(TokenEstimator.estimate(rawText)) / seconds
+                        assistantMessage.tokensPerSecond = Double(TokenEstimator.estimate(outcome.displayText)) / seconds
                     }
 
                     if let pending = pendingVariants[conversationID] {

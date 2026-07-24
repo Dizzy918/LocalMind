@@ -390,6 +390,14 @@ struct MessageBubble: View {
                     }
                 }
 
+                // What the model ran to produce this answer. Sits below the
+                // text because it's provenance for the answer above it —
+                // and because the app can launch real tools on the user's
+                // machine, this record has to outlive the session.
+                if !isUser, let toolRuns = message.toolRuns, !toolRuns.isEmpty {
+                    ToolRunTranscript(runs: toolRuns)
+                }
+
                 // RAG citations — which documents grounded this answer.
                 if !isUser, let sources = message.sources, !sources.isEmpty {
                     sourcesFooter(sources)
@@ -572,6 +580,118 @@ struct MessageBubble: View {
                     .help(source.snippet)
             }
         }
+    }
+}
+
+/// The tools an answer ran, collapsed to a row of chips. Expanding one shows
+/// exactly what was sent and what came back — the app runs real executables
+/// outside a sandbox, so "what did it just do on my Mac?" has to be
+/// answerable from the conversation itself, not only the session-scoped
+/// audit log in Settings.
+struct ToolRunTranscript: View {
+    let runs: [ToolRun]
+
+    @State private var expandedID: UUID?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
+            HStack(spacing: 6) {
+                Image(systemName: "wrench.and.screwdriver")
+                    .font(.system(size: 10))
+                    .foregroundStyle(AppTheme.Colors.textTertiary)
+
+                ForEach(runs) { run in
+                    ToolRunChip(run: run, isExpanded: expandedID == run.id) {
+                        withAnimation(AppTheme.Animations.quick) {
+                            expandedID = expandedID == run.id ? nil : run.id
+                        }
+                    }
+                }
+            }
+
+            if let expandedID, let run = runs.first(where: { $0.id == expandedID }) {
+                VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
+                    detailSection("Sent", text: run.formattedArguments)
+                    detailSection(run.isError ? "Failed" : "Returned", text: run.result)
+                }
+                .padding(AppTheme.Spacing.sm)
+                .background {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(AppTheme.Colors.backgroundSecondary.opacity(0.6))
+                }
+            }
+        }
+    }
+
+    private func detailSection(_ label: String, text: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label.uppercased())
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(AppTheme.Colors.textTertiary)
+            ScrollView {
+                Text(text)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+            .frame(maxHeight: 150)
+        }
+    }
+
+}
+
+/// One tool's chip. Split out of `ToolRunTranscript` because the inline
+/// expression tripped the type-checker's time limit.
+private struct ToolRunChip: View {
+    let run: ToolRun
+    let isExpanded: Bool
+    let onTap: () -> Void
+
+    private var tint: Color {
+        run.isError ? AppTheme.Colors.statusOffline : AppTheme.Colors.textSecondary
+    }
+
+    private var duration: String? {
+        guard let seconds = run.seconds else { return nil }
+        return seconds < 1
+            ? "\(Int((seconds * 1000).rounded()))ms"
+            : String(format: "%.1fs", seconds)
+    }
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 4) {
+                if run.isError {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 8))
+                }
+                Text(run.name)
+                    .font(.system(size: 10, weight: .medium))
+                    .lineLimit(1)
+                if let duration {
+                    Text(duration)
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(AppTheme.Colors.textTertiary)
+                }
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 7, weight: .semibold))
+            }
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(chipBackground))
+            .foregroundStyle(tint)
+        }
+        .buttonStyle(.plain)
+        .help(run.isError
+              ? "This tool call failed — click for details"
+              : "Click to see what was sent and returned")
+    }
+
+    private var chipBackground: Color {
+        run.isError
+            ? AppTheme.Colors.statusOffline.opacity(0.14)
+            : AppTheme.Colors.backgroundSecondary
     }
 }
 

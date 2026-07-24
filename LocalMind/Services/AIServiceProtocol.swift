@@ -30,13 +30,29 @@ struct AIToolResult: Codable, Sendable, Identifiable {
     let toolCallId: String
     let content: String
     let isError: Bool
+    /// Wall-clock duration of the call, when measured.
+    let seconds: Double?
 
-    init(id: String = UUID().uuidString, toolCallId: String, content: String, isError: Bool = false) {
+    init(id: String = UUID().uuidString, toolCallId: String, content: String, isError: Bool = false, seconds: Double? = nil) {
         self.id = id
         self.toolCallId = toolCallId
         self.content = content
         self.isError = isError
+        self.seconds = seconds
     }
+}
+
+/// What a tool-augmented generation produced: the model's own text (tool
+/// markers excluded, so it can be persisted as the answer) alongside a record
+/// of every tool that ran.
+struct ToolAugmentedAnswer: Sendable {
+    /// Model-generated text across every round, joined — the answer to persist.
+    var text: String
+    /// Everything the loop streamed, including tool markers — what the user
+    /// watched, used for throughput stats.
+    var displayText: String
+    /// Tools that ran, in call order.
+    var toolRuns: [ToolRun]
 }
  
  // MARK: - AI Backend
