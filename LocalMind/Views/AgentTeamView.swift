@@ -585,31 +585,21 @@ struct AgentTeamView: View {
             }
 
             do {
-                var pendingToolCalls: [AIToolCall] = []
-                for try await chunk in service.streamChat(
+                // Streams the answer and runs any tools the agent calls,
+                // feeding results back so the agent can actually use them (the
+                // arena runs tools without a per-agent approval prompt).
+                _ = try await aiManager.streamChatWithTools(
+                    service: service,
                     messages: [ChatMessage(role: .user, content: userContent)],
                     systemPrompt: systemPrompt,
                     modelOverride: model,
                     parameters: parameters,
-                    tools: tools
-                ) {
-                    if Task.isCancelled { break }
-                    switch chunk {
-                    case .text(let text):
-                        runs[agent.id]?.text += text
-                    case .toolCall(let call):
-                        pendingToolCalls.append(call)
-                    case .toolCalls(let calls):
-                        pendingToolCalls.append(contentsOf: calls)
-                    case .done:
-                        break
+                    tools: tools,
+                    shouldContinue: { !Task.isCancelled },
+                    onDelta: { delta in
+                        runs[agent.id]?.text += delta
                     }
-                }
-                if !Task.isCancelled, !pendingToolCalls.isEmpty {
-                    await aiManager.executeToolCalls(pendingToolCalls) { name, result in
-                        runs[agent.id]?.text += "\n\n_🔧 \(name): \(result)_"
-                    }
-                }
+                )
             } catch {
                 if !Task.isCancelled {
                     runs[agent.id]?.error = error.localizedDescription

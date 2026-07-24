@@ -17,6 +17,7 @@ import XCTest
 final class MockAIService: AIServiceProtocol, @unchecked Sendable {
     struct StreamCall: Sendable {
         let messageContents: [String]
+        let messageRoles: [String]
         let systemPrompt: String?
         let modelOverride: String?
         let temperature: Double?
@@ -48,6 +49,13 @@ final class MockAIService: AIServiceProtocol, @unchecked Sendable {
     var generateOnceReply: String
     /// When set, streamChat fails with this error instead of yielding.
     var errorToThrow: Error?
+    /// When non-empty, each streamChat call consumes the next element and
+    /// yields exactly those chunks (for tool-loop tests). Overrides `chunks`.
+    private var _scriptedRounds: [[AIStreamChunk]] = []
+    var scriptedRounds: [[AIStreamChunk]] {
+        get { lock.lock(); defer { lock.unlock() }; return _scriptedRounds }
+        set { lock.lock(); _scriptedRounds = newValue; lock.unlock() }
+    }
 
     init(chunks: [String] = ["Hello", " world"],
          chunkDelayNanos: UInt64 = 0,
@@ -63,11 +71,14 @@ final class MockAIService: AIServiceProtocol, @unchecked Sendable {
         lock.lock()
         _streamCalls.append(StreamCall(
             messageContents: messages.map(\.content),
+            messageRoles: messages.map { $0.role.rawValue },
             systemPrompt: systemPrompt,
             modelOverride: modelOverride,
             temperature: parameters?.temperature,
             toolNames: tools.map { $0.map(\.name) }
         ))
+        // A scripted round takes precedence over the plain text chunks.
+        let scripted: [AIStreamChunk]? = _scriptedRounds.isEmpty ? nil : _scriptedRounds.removeFirst()
         lock.unlock()
 
         let chunks = self.chunks
@@ -77,6 +88,16 @@ final class MockAIService: AIServiceProtocol, @unchecked Sendable {
             let task = Task {
                 if let error {
                     continuation.finish(throwing: error)
+                    return
+                }
+                if let scripted {
+                    for chunk in scripted {
+                        if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
+                        if Task.isCancelled { break }
+                        continuation.yield(chunk)
+                    }
+                    continuation.yield(.done)
+                    continuation.finish()
                     return
                 }
                 for chunk in chunks {
@@ -355,6 +376,86 @@ final class ChatGenerationServiceTests: XCTestCase {
 
         XCTAssertNil(mock.streamCalls.first?.toolNames ?? nil)
     }
+
+    // MARK: Tool loop
+
+    private func tool(_ name: String) -> AITool {
+        AITool(id: name, name: name, description: "", inputSchema: AnyCodable([String: String]()))
+    }
+
+    func testToolLoopFeedsResultsBackAndProducesFinalAnswer() async throws {
+        // Round 1 asks for a tool; round 2 answers. The loop must run the tool,
+        // feed its result back, and let the model produce the final answer.
+        mock.scriptedRounds = [
+            [.text("Let me check."), .toolCalls([AIToolCall(id: "call_1", name: "get_time", arguments: "{}")])],
+            [.text("It is noon.")]
+        ]
+
+        var delivered = ""
+        let raw = try await aiManager.streamChatWithTools(
+            service: mock,
+            messages: [ChatMessage(role: .user, content: "what time is it?")],
+            systemPrompt: "sys",
+            modelOverride: nil,
+            parameters: .default,
+            tools: [tool("get_time")],
+            onDelta: { delivered += $0 }
+        )
+
+        XCTAssertTrue(raw.contains("Let me check."))
+        XCTAssertTrue(raw.contains("It is noon."), "the follow-up answer must appear")
+        XCTAssertTrue(raw.contains("get_time"), "a marker names the tool that ran")
+        XCTAssertEqual(delivered, raw, "onDelta must mirror the returned text exactly")
+
+        XCTAssertEqual(mock.streamCalls.count, 2, "the model should be re-invoked after the tool ran")
+        // The second round must carry the assistant tool-call turn and the
+        // tool result back to the model.
+        XCTAssertTrue(mock.streamCalls.last?.messageRoles.contains("assistant") ?? false)
+        XCTAssertTrue(mock.streamCalls.last?.messageRoles.contains("tool") ?? false)
+    }
+
+    func testToolLoopStopsAtRoundCap() async throws {
+        // A model that always asks for a tool must not loop forever.
+        mock.scriptedRounds = Array(
+            repeating: [.toolCalls([AIToolCall(id: "c", name: "spin", arguments: "{}")])],
+            count: 20
+        )
+
+        _ = try await aiManager.streamChatWithTools(
+            service: mock,
+            messages: [ChatMessage(role: .user, content: "go")],
+            systemPrompt: "s",
+            modelOverride: nil,
+            parameters: .default,
+            tools: [tool("spin")],
+            maxToolRounds: 5,
+            onDelta: { _ in }
+        )
+
+        // 5 tool rounds, then a 6th stream call whose calls are refused by the cap.
+        XCTAssertEqual(mock.streamCalls.count, 6)
+    }
+
+    func testNoToolsMeansSingleRound() async throws {
+        // Even if the model emits a tool call, passing tools: nil means we
+        // never loop — the text of that turn is the answer.
+        mock.scriptedRounds = [
+            [.text("Answer."), .toolCalls([AIToolCall(id: "x", name: "ghost", arguments: "{}")])]
+        ]
+
+        let raw = try await aiManager.streamChatWithTools(
+            service: mock,
+            messages: [ChatMessage(role: .user, content: "hi")],
+            systemPrompt: "s",
+            modelOverride: nil,
+            parameters: .default,
+            tools: nil,
+            onDelta: { _ in }
+        )
+
+        XCTAssertEqual(raw, "Answer.")
+        XCTAssertEqual(mock.streamCalls.count, 1)
+    }
 }
 
 // MARK: - Router unit tests
@@ -423,5 +524,54 @@ final class ThinkBlockStrippingTests: XCTestCase {
     func testUnterminatedThinkBlockDropsTail() {
         XCTAssertEqual("Answer so far <think>half a thought".strippingThinkBlocks,
                        "Answer so far")
+    }
+}
+
+// MARK: - OpenAI streaming tool-call reassembly
+
+final class OpenAIToolCallAssemblerTests: XCTestCase {
+
+    /// Decodes one SSE chunk's `delta.tool_calls` the way the stream loop does.
+    private func fragments(_ json: String) -> [OpenAIStreamChunk.OpenAIToolCall] {
+        let data = json.data(using: .utf8)!
+        let chunk = try! JSONDecoder().decode(OpenAIStreamChunk.self, from: data)
+        return chunk.choices.first?.delta.toolCalls ?? []
+    }
+
+    func testReassemblesFragmentedNameAndArguments() {
+        // The real failure mode: name only in the first fragment, arguments
+        // dribbled across several. The old code yielded each fragment as a
+        // finished call (empty names, truncated JSON).
+        var assembler = OpenAIToolCallAssembler()
+        assembler.ingest(fragments(#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"get_weather","arguments":""}}]}}]}"#))
+        assembler.ingest(fragments(#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"loc"}}]}}]}"#))
+        assembler.ingest(fragments(#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ation\":\"NYC\"}"}}]}}]}"#))
+
+        let calls = assembler.assembled()
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(calls.first?.id, "call_1")
+        XCTAssertEqual(calls.first?.name, "get_weather")
+        XCTAssertEqual(calls.first?.arguments, "{\"location\":\"NYC\"}")
+    }
+
+    func testParallelToolCallsKeyedByIndex() {
+        var assembler = OpenAIToolCallAssembler()
+        assembler.ingest(fragments(#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"first","arguments":"{}"}},{"index":1,"id":"b","function":{"name":"second","arguments":"{}"}}]}}]}"#))
+
+        let calls = assembler.assembled()
+        XCTAssertEqual(calls.map(\.name), ["first", "second"])
+        XCTAssertEqual(calls.map(\.id), ["a", "b"])
+    }
+
+    func testNamelessFragmentsAreDropped() {
+        var assembler = OpenAIToolCallAssembler()
+        assembler.ingest(fragments(#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}"#))
+        XCTAssertTrue(assembler.assembled().isEmpty, "a fragment that never carried a name isn't a usable call")
+    }
+
+    func testEmptyArgumentsDefaultToJSONObject() {
+        var assembler = OpenAIToolCallAssembler()
+        assembler.ingest(fragments(#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c","function":{"name":"noargs"}}]}}]}"#))
+        XCTAssertEqual(assembler.assembled().first?.arguments, "{}")
     }
 }

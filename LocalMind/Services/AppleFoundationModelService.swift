@@ -138,6 +138,10 @@ final class AppleFoundationModelService: AIServiceProtocol, @unchecked Sendable 
                 parts.append("[User]\n\(msg.content)")
             case .assistant:
                 parts.append("[Assistant]\n\(msg.content)")
+            case .tool:
+                // Apple's on-device model has no tool-calling API, so the loop
+                // never feeds it tool turns; render defensively as context.
+                parts.append("[Tool Result]\n\(msg.content)")
             }
         }
 
