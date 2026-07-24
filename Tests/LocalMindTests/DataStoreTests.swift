@@ -176,26 +176,23 @@ final class DataStoreTests: XCTestCase {
     }
 
     func testSearchIsScopedToActiveProfile() {
-        // saveConversation stamps the active profile (read from UserDefaults)
-        // onto new conversations, and search must only return the active
-        // profile's matches. Save/restore the real key so we don't disturb
-        // the host app's state.
+        // saveConversation stamps the active profile (read from the store's
+        // injected defaults) onto new conversations, and search must only
+        // return the active profile's matches. The store uses its own isolated
+        // suite, so writing the key here can't be polluted by — or pollute —
+        // another parallel test process.
         let key = "activeProfileID"
-        let original = UserDefaults.standard.string(forKey: key)
-        defer {
-            if let original { UserDefaults.standard.set(original, forKey: key) }
-            else { UserDefaults.standard.removeObject(forKey: key) }
-        }
+        let defaults = dataStore.defaults
 
         let profileA = UUID()
         let profileB = UUID()
 
-        UserDefaults.standard.set(profileA.uuidString, forKey: key)
+        defaults.set(profileA.uuidString, forKey: key)
         var convoA = Conversation(title: "A chat")
         convoA.messages.append(ChatMessage(role: .user, content: "alpha secret"))
         dataStore.saveConversation(convoA)
 
-        UserDefaults.standard.set(profileB.uuidString, forKey: key)
+        defaults.set(profileB.uuidString, forKey: key)
         var convoB = Conversation(title: "B chat")
         convoB.messages.append(ChatMessage(role: .user, content: "beta secret"))
         dataStore.saveConversation(convoB)
@@ -206,7 +203,7 @@ final class DataStoreTests: XCTestCase {
         XCTAssertTrue(dataStore.searchConversations(query: "beta").contains { $0.id == convoB.id })
 
         // Switch to A: now A's word matches and B's does not.
-        UserDefaults.standard.set(profileA.uuidString, forKey: key)
+        defaults.set(profileA.uuidString, forKey: key)
         XCTAssertTrue(dataStore.searchConversations(query: "alpha").contains { $0.id == convoA.id })
         XCTAssertTrue(dataStore.searchConversations(query: "beta").isEmpty,
                       "Profile A must not see profile B's conversations in search")

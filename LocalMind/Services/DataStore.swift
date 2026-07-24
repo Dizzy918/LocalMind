@@ -35,6 +35,11 @@ final class DataStore {
     private let fileManager = FileManager.default
     let baseDirectory: URL
 
+    /// Where profile scoping reads `activeProfileID`. Production uses
+    /// `.standard`; tests inject an isolated suite so the profile filter can't
+    /// be polluted by another parallel test process sharing `.standard`.
+    let defaults: UserDefaults
+
     /// Persistence failures used to vanish into `try?` — a failed save meant
     /// silent data loss. They're at least visible in Console now.
     private static let logger = Logger(subsystem: "com.localmind.app", category: "DataStore")
@@ -48,6 +53,7 @@ final class DataStore {
     // MARK: - Initialization
 
     init() {
+        defaults = .standard
         let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let oldBaseDirectory = appSupport.appendingPathComponent("LocalAIHelper", isDirectory: true)
         baseDirectory = appSupport.appendingPathComponent("LocalMind", isDirectory: true)
@@ -72,7 +78,11 @@ final class DataStore {
     /// temp directory instead of the user's real Application Support
     /// folder. Production code MUST use `init()`; this overload exists
     /// only so XCTest can run without polluting the user's chat history.
-    init(baseDirectoryOverride: URL) {
+    init(baseDirectoryOverride: URL, defaults: UserDefaults? = nil) {
+        // Default each test store to its own throwaway suite so profile-scoping
+        // reads are deterministic regardless of what another parallel test
+        // process writes to `.standard`.
+        self.defaults = defaults ?? UserDefaults(suiteName: "LocalMindTests-\(UUID().uuidString)") ?? .standard
         baseDirectory = baseDirectoryOverride
         ensureDirectories()
         loadAll()
@@ -85,7 +95,7 @@ final class DataStore {
     /// profile. Without this, those conversations would silently
     /// disappear from the sidebar after the upgrade.
     private func adoptOrphansForExistingProfile() {
-        guard let raw = UserDefaults.standard.string(forKey: "activeProfileID"),
+        guard let raw = defaults.string(forKey: "activeProfileID"),
               let uuid = UUID(uuidString: raw) else { return }
         let hasOrphans = conversations.contains { $0.profileID == nil }
         guard hasOrphans else { return }
@@ -194,7 +204,7 @@ final class DataStore {
         // stay with their original owner.
         var stamped = conversation
         if stamped.profileID == nil,
-           let raw = UserDefaults.standard.string(forKey: "activeProfileID"),
+           let raw = defaults.string(forKey: "activeProfileID"),
            let uuid = UUID(uuidString: raw) {
             stamped.profileID = uuid
         }
@@ -348,7 +358,7 @@ final class DataStore {
     }
 
     private func activeProfileID() -> UUID? {
-        guard let raw = UserDefaults.standard.string(forKey: "activeProfileID") else { return nil }
+        guard let raw = defaults.string(forKey: "activeProfileID") else { return nil }
         return UUID(uuidString: raw)
     }
 
@@ -805,10 +815,10 @@ final class DataStore {
     /// initializer — tests get a clean, unseeded store.
     private func seedDefaultAgentsIfNeeded() {
         let seedFlag = "didSeedDefaultAgents"
-        guard !UserDefaults.standard.bool(forKey: seedFlag), agents.isEmpty else { return }
+        guard !defaults.bool(forKey: seedFlag), agents.isEmpty else { return }
         for template in Agent.starterTemplates() {
             saveAgent(template)
         }
-        UserDefaults.standard.set(true, forKey: seedFlag)
+        defaults.set(true, forKey: seedFlag)
     }
 }
