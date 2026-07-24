@@ -17,6 +17,49 @@ nonisolated enum MessageRole: String, Codable, Sendable {
     case tool
 }
 
+/// A tool the model ran while producing an answer, kept on the message so the
+/// transcript survives a relaunch. MCPService's audit log covers the same
+/// ground but is session-only and lives in Settings — this is what the chat
+/// itself can show, in context, next to the answer the tool produced.
+nonisolated struct ToolRun: Codable, Identifiable, Sendable {
+    let id: UUID
+    let name: String
+    /// Arguments exactly as the model emitted them (a JSON string).
+    let arguments: String
+    let result: String
+    let isError: Bool
+    /// Wall-clock time the call took, when measured.
+    let seconds: Double?
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        arguments: String,
+        result: String,
+        isError: Bool = false,
+        seconds: Double? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.arguments = arguments
+        self.result = result
+        self.isError = isError
+        self.seconds = seconds
+    }
+
+    /// Arguments pretty-printed for display, falling back to the raw string
+    /// when the model emitted something that isn't valid JSON.
+    var formattedArguments: String {
+        guard let data = arguments.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let pretty = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
+              let text = String(data: pretty, encoding: .utf8) else {
+            return arguments
+        }
+        return text
+    }
+}
+
 /// A knowledge-base passage an answer was grounded in (RAG citation).
 nonisolated struct MessageSource: Codable, Identifiable, Sendable {
     let id: UUID
@@ -60,6 +103,9 @@ nonisolated struct ChatMessage: Identifiable, Codable, Sendable {
     /// the ephemeral assistant messages the tool loop feeds back to the model;
     /// never set on persisted messages.
     var toolCalls: [AIToolCall]?
+    /// Tools that ran while producing this answer, with their results. Persisted
+    /// — this is the durable transcript the bubble renders.
+    var toolRuns: [ToolRun]?
     /// For `.tool` messages, the id of the tool call this result answers, so
     /// OpenAI-compatible servers can correlate result → call.
     var toolCallID: String?

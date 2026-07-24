@@ -392,7 +392,7 @@ final class ChatGenerationServiceTests: XCTestCase {
         ]
 
         var delivered = ""
-        let raw = try await aiManager.streamChatWithTools(
+        let outcome = try await aiManager.streamChatWithTools(
             service: mock,
             messages: [ChatMessage(role: .user, content: "what time is it?")],
             systemPrompt: "sys",
@@ -402,10 +402,13 @@ final class ChatGenerationServiceTests: XCTestCase {
             onDelta: { delivered += $0 }
         )
 
-        XCTAssertTrue(raw.contains("Let me check."))
-        XCTAssertTrue(raw.contains("It is noon."), "the follow-up answer must appear")
-        XCTAssertTrue(raw.contains("get_time"), "a marker names the tool that ran")
-        XCTAssertEqual(delivered, raw, "onDelta must mirror the returned text exactly")
+        XCTAssertTrue(outcome.text.contains("Let me check."))
+        XCTAssertTrue(outcome.text.contains("It is noon."), "the follow-up answer must appear")
+        // The persisted answer stays clean — the marker belongs to the live
+        // stream and the transcript, not to the saved message text.
+        XCTAssertFalse(outcome.text.contains("🔧"), "tool markers must not leak into the persisted answer")
+        XCTAssertTrue(outcome.displayText.contains("get_time"), "the live stream marks what ran")
+        XCTAssertEqual(delivered, outcome.displayText, "onDelta must mirror the display text exactly")
 
         XCTAssertEqual(mock.streamCalls.count, 2, "the model should be re-invoked after the tool ran")
         // The second round must carry the assistant tool-call turn and the
@@ -443,7 +446,7 @@ final class ChatGenerationServiceTests: XCTestCase {
             [.text("Answer."), .toolCalls([AIToolCall(id: "x", name: "ghost", arguments: "{}")])]
         ]
 
-        let raw = try await aiManager.streamChatWithTools(
+        let outcome = try await aiManager.streamChatWithTools(
             service: mock,
             messages: [ChatMessage(role: .user, content: "hi")],
             systemPrompt: "s",
@@ -453,8 +456,55 @@ final class ChatGenerationServiceTests: XCTestCase {
             onDelta: { _ in }
         )
 
-        XCTAssertEqual(raw, "Answer.")
+        XCTAssertEqual(outcome.text, "Answer.")
+        XCTAssertTrue(outcome.toolRuns.isEmpty)
         XCTAssertEqual(mock.streamCalls.count, 1)
+    }
+
+    func testToolRunsArePersistedOnTheAssistantMessage() async throws {
+        // Without an MCP backend wired up the call fails — which is exactly the
+        // case worth recording: the transcript must capture failures too, and
+        // survive on the message rather than living only in the session log.
+        mock.scriptedRounds = [
+            [.toolCalls([AIToolCall(id: "call_1", name: "lookup", arguments: "{\"q\":\"swift\"}")])],
+            [.text("Here's what I found.")]
+        ]
+
+        let outcome = try await aiManager.streamChatWithTools(
+            service: mock,
+            messages: [ChatMessage(role: .user, content: "look it up")],
+            systemPrompt: "s",
+            modelOverride: nil,
+            parameters: .default,
+            tools: [tool("lookup")],
+            onDelta: { _ in }
+        )
+
+        XCTAssertEqual(outcome.toolRuns.count, 1)
+        let run = try XCTUnwrap(outcome.toolRuns.first)
+        XCTAssertEqual(run.name, "lookup")
+        XCTAssertEqual(run.arguments, "{\"q\":\"swift\"}")
+        XCTAssertFalse(run.result.isEmpty, "a run always records what came back")
+        XCTAssertTrue(run.isError, "no MCP backend means the call couldn't run — recorded, not swallowed")
+        // No backend means nothing was executed, so there's nothing to time.
+        XCTAssertNil(run.seconds)
+
+        // And the whole thing round-trips through the message's Codable form.
+        var message = ChatMessage(role: .assistant, content: outcome.text)
+        message.toolRuns = outcome.toolRuns
+        let decoded = try JSONDecoder().decode(ChatMessage.self, from: JSONEncoder().encode(message))
+        XCTAssertEqual(decoded.toolRuns?.first?.name, "lookup")
+        XCTAssertEqual(decoded.toolRuns?.first?.arguments, "{\"q\":\"swift\"}")
+    }
+
+    func testToolRunPrettyPrintsArgumentsAndToleratesGarbage() {
+        let valid = ToolRun(name: "t", arguments: "{\"b\":2,\"a\":1}", result: "ok")
+        XCTAssertTrue(valid.formattedArguments.contains("\n"), "valid JSON is pretty-printed")
+        XCTAssertTrue(valid.formattedArguments.contains("\"a\""))
+
+        // A model that emits malformed JSON still shows the user something.
+        let broken = ToolRun(name: "t", arguments: "{not json", result: "ok")
+        XCTAssertEqual(broken.formattedArguments, "{not json")
     }
 }
 
