@@ -190,6 +190,9 @@ actor OllamaService: AIServiceProtocol {
                         }
 
                         if chunk.done {
+                            if let usage = chunk.usage {
+                                continuation.yield(.usage(usage))
+                            }
                             continuation.yield(.done)
                             break
                         }
@@ -283,6 +286,29 @@ actor OllamaService: AIServiceProtocol {
 nonisolated struct OllamaChatChunk: Decodable, Sendable {
     let message: OllamaChatMessage?
     let done: Bool
+    /// Ollama reports real token counts (and nanosecond timings) on the final
+    /// chunk. These beat TokenEstimator's heuristic, so the stats use them.
+    let promptEvalCount: Int?
+    let evalCount: Int?
+    let evalDuration: Int64?
+
+    enum CodingKeys: String, CodingKey {
+        case message, done
+        case promptEvalCount = "prompt_eval_count"
+        case evalCount = "eval_count"
+        case evalDuration = "eval_duration"
+    }
+
+    /// Usage from the final chunk, or nil when this chunk carried none.
+    var usage: AIUsage? {
+        let value = AIUsage(
+            promptTokens: promptEvalCount,
+            completionTokens: evalCount,
+            // eval_duration is in nanoseconds.
+            generationSeconds: evalDuration.map { Double($0) / 1_000_000_000 }
+        )
+        return value.isEmpty ? nil : value
+    }
 
     nonisolated struct OllamaChatMessage: Decodable, Sendable {
         let role: String?

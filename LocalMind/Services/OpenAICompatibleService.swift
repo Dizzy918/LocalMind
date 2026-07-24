@@ -197,12 +197,16 @@ actor OpenAICompatibleService: AIServiceProtocol {
                             continue
                         }
 
+                        if let usage = chunk.usage?.asUsage {
+                            continuation.yield(.usage(usage))
+                        }
+
                         // Accumulate streamed tool-call fragments by index.
-                        if let toolCalls = chunk.choices.first?.delta.toolCalls {
+                        if let toolCalls = chunk.choices?.first?.delta.toolCalls {
                             assembler.ingest(toolCalls)
                         }
 
-                        if let content = chunk.choices.first?.delta.content, !content.isEmpty {
+                        if let content = chunk.choices?.first?.delta.content, !content.isEmpty {
                             continuation.yield(.text(content))
                         }
                     }
@@ -287,7 +291,30 @@ struct OpenAIToolCallAssembler {
 nonisolated struct OpenAIStreamChunk: Decodable, Sendable {
     let id: String?
     let object: String?
-    let choices: [OpenAIStreamChoice]
+    /// Optional because a usage-only final chunk carries no choices (some
+    /// servers omit the key entirely rather than sending an empty array) —
+    /// and a decode failure there would throw the token counts away.
+    let choices: [OpenAIStreamChoice]?
+    /// Several OpenAI-compatible servers (llama.cpp, LM Studio) volunteer real
+    /// token counts on the final chunk. We read it when present but never ask
+    /// for it — requesting `stream_options` would risk upsetting the stricter
+    /// servers in the preset list for a stat that's nice-to-have.
+    let usage: OpenAIUsage?
+
+    nonisolated struct OpenAIUsage: Decodable, Sendable {
+        let promptTokens: Int?
+        let completionTokens: Int?
+
+        enum CodingKeys: String, CodingKey {
+            case promptTokens = "prompt_tokens"
+            case completionTokens = "completion_tokens"
+        }
+
+        var asUsage: AIUsage? {
+            let value = AIUsage(promptTokens: promptTokens, completionTokens: completionTokens)
+            return value.isEmpty ? nil : value
+        }
+    }
 
     nonisolated struct OpenAIStreamChoice: Decodable, Sendable {
         let index: Int?

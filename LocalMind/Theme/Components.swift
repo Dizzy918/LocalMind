@@ -280,9 +280,7 @@ struct MessageBubble: View {
                             Text(String(format: "%.1f tok/s", tps))
                                 .font(AppTheme.Typography.captionSecondary)
                                 .foregroundStyle(AppTheme.Colors.textTertiary)
-                                .help(message.generationSeconds.map {
-                                    String(format: "Generated in %.1fs", $0)
-                                } ?? "Generation speed")
+                                .help(throughputTooltip)
                         }
                     }
 
@@ -514,6 +512,27 @@ struct MessageBubble: View {
         } message: {
             Text("This will permanently remove this message from the conversation.")
         }
+    }
+
+    /// Spells out where the throughput number came from. When the backend
+    /// reported real token counts we say so (and show them); otherwise the
+    /// figure rests on TokenEstimator's heuristic and shouldn't be presented
+    /// as if it were measured.
+    private var throughputTooltip: String {
+        var parts: [String] = []
+        if let seconds = message.generationSeconds {
+            parts.append(String(format: "Generated in %.1fs", seconds))
+        }
+        if let completion = message.completionTokens {
+            if let prompt = message.promptTokens {
+                parts.append("\(completion) tokens out, \(prompt) in — counted by the model server")
+            } else {
+                parts.append("\(completion) tokens, counted by the model server")
+            }
+        } else {
+            parts.append("Token count estimated — this backend doesn't report usage")
+        }
+        return parts.joined(separator: "\n")
     }
 
     /// "LocalMind" by default; "🔎 Researcher" when an agent answered.

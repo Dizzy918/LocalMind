@@ -427,11 +427,22 @@ final class ChatGenerationService {
                         assistantMessage.toolRuns = outcome.toolRuns
                     }
 
-                    // Performance stats: reasoning tokens were generated too,
-                    // so throughput is measured over everything streamed.
+                    // Performance stats. Prefer the backend's own token counts
+                    // and generation time — TokenEstimator is a heuristic, and
+                    // wall-clock includes prompt evaluation and tool time that
+                    // aren't generation. Fall back to the estimate only when
+                    // the backend reported nothing.
                     let seconds = Date().timeIntervalSince(generationStart)
                     assistantMessage.generationSeconds = seconds
-                    if seconds > 0.2 {
+                    assistantMessage.promptTokens = outcome.usage?.promptTokens
+                    assistantMessage.completionTokens = outcome.usage?.completionTokens
+
+                    if let completion = outcome.usage?.completionTokens,
+                       let generating = outcome.usage?.generationSeconds, generating > 0 {
+                        assistantMessage.tokensPerSecond = Double(completion) / generating
+                    } else if let completion = outcome.usage?.completionTokens, seconds > 0.2 {
+                        assistantMessage.tokensPerSecond = Double(completion) / seconds
+                    } else if seconds > 0.2 {
                         assistantMessage.tokensPerSecond = Double(TokenEstimator.estimate(outcome.displayText)) / seconds
                     }
 
