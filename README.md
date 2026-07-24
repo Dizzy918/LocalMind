@@ -54,7 +54,7 @@ It's a native Swift/SwiftUI app (no Electron), MIT-licensed, with **no telemetry
 - **Cross-Chat Memory** — opt-in recall of relevant exchanges from your other conversations, embedded and searched entirely on-device
 - **In-App Model Manager** — pull Ollama models with a progress bar, delete them, and browse any backend's catalogue without touching a terminal (Settings → Providers)
 - **Hands-Free Voice Mode** — a full spoken conversation loop: talk, pause, and the answer is read back to you, then it listens again — all on-device
-- **Automation** — `localmind://ask?prompt=…&agent=Coder` starts an (agent-routed) chat from Shortcuts, scripts, or other apps
+- **Automation** — Shortcuts actions that return the answer to your workflow, plus `localmind://ask?prompt=…&agent=Coder` for scripts and other apps
 - **Ask LocalMind Anywhere** — select text in any Mac app and right-click → Services → "Ask LocalMind" to send it straight to a chat
 - **Floating Bubble** — the global-hotkey quick-ask now routes through the same engine as the main window, so its answers get agents, memory, and context — and keep generating after you dismiss it
 - **Knowledge Collections** — group documents into named sets and point each agent at just the collections it needs
@@ -299,7 +299,11 @@ All settings are available in the app's Settings panel (`Cmd + ,`):
 
 ### Automation & integration
 
-- **URL scheme** — `localmind://ask?prompt=Summarize%20this&agent=Coder` (or `localmind://new`) from Shortcuts, scripts, or other apps
+- **Shortcuts** — three actions, and unlike the URL scheme they hand the result *back* to your shortcut:
+  - **Ask LocalMind** — prompt (plus an optional agent) in, the answer out, so it can feed the next step. Runs through the normal pipeline, so it gets the agent's persona, your knowledge base, memory, and tools. "Save to History" is on by default; turn it off for shortcuts that run on a loop.
+  - **Search LocalMind Documents** — returns the passages that match, without generating an answer
+  - **New LocalMind Chat** — opens a fresh conversation
+- **URL scheme** — `localmind://ask?prompt=Summarize%20this&agent=Coder` (or `localmind://new`) from scripts or other apps. Fire-and-forget: it starts the ask but returns nothing, so prefer the Shortcuts actions when you need the answer.
 - **Services menu** — select text in any app → right-click → Services → "Ask LocalMind"
 - See [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) for building signed releases and publishing a Homebrew cask
 
