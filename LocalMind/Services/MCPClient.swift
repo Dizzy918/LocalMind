@@ -13,6 +13,10 @@ actor MCPClient: Sendable {
 
     private var state: MCPConnectionState = .disconnected
     private var pendingRequests: [JSONRPCID: CheckedContinuation<JSONRPCResponse, Error>] = [:]
+    /// Per-request timeout tasks, so a request whose server never answers
+    /// fails instead of hanging forever. Cancelled the moment its response
+    /// (or a transport failure) arrives.
+    private var pendingTimeouts: [JSONRPCID: Task<Void, Never>] = [:]
     private var requestIDCounter: Int = 0
     private var process: Process?
     private var stdinPipe: Pipe?
@@ -118,6 +122,10 @@ actor MCPClient: Sendable {
         for task in httpInFlight { task.cancel() }
         httpInFlight.removeAll()
         httpSessionID = nil
+
+        // Fail anything still waiting so callers unblock instead of hanging on
+        // a client we just tore down.
+        failAllPending(with: MCPError.notConnected)
 
         state = .disconnected
     }
@@ -348,6 +356,7 @@ actor MCPClient: Sendable {
     }
 
     private func handleResponse(_ response: JSONRPCResponse) async {
+        pendingTimeouts.removeValue(forKey: response.id)?.cancel()
         if let continuation = pendingRequests.removeValue(forKey: response.id) {
             continuation.resume(returning: response)
         }
@@ -357,6 +366,8 @@ actor MCPClient: Sendable {
     /// JSON-RPC requests so callers like connect() unblock instead of
     /// waiting forever on a process that's no longer there.
     private func handleProcessTermination(exitCode: Int32) async {
+        for task in pendingTimeouts.values { task.cancel() }
+        pendingTimeouts.removeAll()
         let pending = pendingRequests
         pendingRequests.removeAll()
         let msg = "Server process exited (status \(exitCode)) before responding. Check the package name and that the command is correct."
@@ -395,10 +406,10 @@ actor MCPClient: Sendable {
         // 20s is generous for npx cold-cache installs; anything longer is
         // almost certainly a dead handshake (wrong package, server crashed
         // silently after stdio open, etc.). We'd rather surface an error
-        // than leave the UI stuck on "Connecting…" indefinitely.
-        let response = try await withTimeout(seconds: 20) {
-            try await self.sendRequest(method: "initialize", params: params)
-        }
+        // than leave the UI stuck on "Connecting…" indefinitely. The timeout
+        // is enforced per-request inside `sendRequest`, which cleans up the
+        // pending continuation on expiry (the old TaskGroup race could leak it).
+        let response = try await sendRequest(method: "initialize", params: params, timeout: 20)
         guard let result = response.result else {
             throw MCPError.serverError("Empty initialize response")
         }
@@ -406,20 +417,12 @@ actor MCPClient: Sendable {
         return try decoder.decode(MCPInitializeResponse.self, from: data)
     }
 
-    private func withTimeout<T: Sendable>(seconds: Double, _ op: @escaping @Sendable () async throws -> T) async throws -> T {
-        try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask { try await op() }
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-                throw MCPError.transportError("Timed out after \(Int(seconds))s waiting for server. The package may not exist on npm, or the server crashed during startup.")
-            }
-            let result = try await group.next()!
-            group.cancelAll()
-            return result
-        }
-    }
-
-    private func sendRequest(method: String, params: [String: AnyCodable]?) async throws -> JSONRPCResponse {
+    /// Sends a JSON-RPC request and waits for its response, failing after
+    /// `timeout` seconds. Every request is timed out — not just `initialize` —
+    /// because a connected-but-silent server (process alive, so the
+    /// termination handler never fires) would otherwise wedge `tools/call`
+    /// and `tools/list` indefinitely.
+    private func sendRequest(method: String, params: [String: AnyCodable]?, timeout: Double = 60) async throws -> JSONRPCResponse {
         let id = nextRequestID()
         let request = JSONRPCRequest(id: id, method: method, params: params)
         let data = try encoder.encode(request)
@@ -429,7 +432,22 @@ actor MCPClient: Sendable {
 
         return try await withCheckedThrowingContinuation { continuation in
             pendingRequests[id] = continuation
+            pendingTimeouts[id] = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                if Task.isCancelled { return }
+                await self?.timeoutRequest(id, method: method, seconds: timeout)
+            }
         }
+    }
+
+    /// Fails a single in-flight request that outran its timeout, cleaning up
+    /// both maps so nothing leaks. No-op if the response already arrived.
+    private func timeoutRequest(_ id: JSONRPCID, method: String, seconds: Double) {
+        pendingTimeouts.removeValue(forKey: id)
+        guard let continuation = pendingRequests.removeValue(forKey: id) else { return }
+        continuation.resume(throwing: MCPError.transportError(
+            "Timed out after \(Int(seconds))s waiting for '\(method)'. The server may have stalled or the package may not exist."
+        ))
     }
 
     private func nextRequestID() -> JSONRPCID {
@@ -516,6 +534,8 @@ actor MCPClient: Sendable {
     }
 
     private func failAllPending(with error: Error) {
+        for task in pendingTimeouts.values { task.cancel() }
+        pendingTimeouts.removeAll()
         let pending = pendingRequests
         pendingRequests.removeAll()
         for (_, cont) in pending { cont.resume(throwing: error) }
