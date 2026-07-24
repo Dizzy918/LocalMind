@@ -575,12 +575,16 @@ struct ContentView: View {
                 return Conversation()
             },
             set: { updated in
-                if draftConversations[updated.id] != nil {
-                    draftConversations[updated.id] = updated
-                }
-                if !updated.messages.isEmpty
-                    || dataStore.conversations.contains(where: { $0.id == updated.id }) {
+                let isPersisted = !updated.messages.isEmpty
+                    || dataStore.conversations.contains(where: { $0.id == updated.id })
+                if isPersisted {
                     dataStore.saveConversation(updated)
+                    // Once it lives in the data store the in-memory draft is
+                    // redundant — the getter reads the store first. Dropping it
+                    // stops every later save from also rewriting a stale draft.
+                    draftConversations.removeValue(forKey: updated.id)
+                } else if draftConversations[updated.id] != nil {
+                    draftConversations[updated.id] = updated
                 }
             }
         )
