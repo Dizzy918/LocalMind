@@ -28,6 +28,11 @@ nonisolated struct ChatMemoryHit: Sendable {
 private struct ChatMemoryArchive: Codable {
     var entries: [ChatMemoryEntry]
     var indexedExchangeCounts: [UUID: Int]
+    /// Signature of the already-indexed exchange prefix per conversation, so an
+    /// edit to an earlier turn (which changes the text but not the count) is
+    /// detected and re-embedded. Optional so archives written before this
+    /// field decode cleanly.
+    var contentSignatures: [UUID: Int]?
 }
 
 @Observable
@@ -39,6 +44,9 @@ final class ChatMemoryStore {
     /// How many exchanges of each conversation are already indexed, so
     /// re-indexing after a new turn only embeds the delta.
     private var indexedExchangeCounts: [UUID: Int] = [:]
+    /// Signature of the indexed exchange prefix per conversation — lets us tell
+    /// an *edit* to an old turn apart from an *append* of a new one.
+    private var contentSignatures: [UUID: Int] = [:]
     private let fileURL: URL
 
     /// Uses Apple embeddings unconditionally: always available, on-device,
@@ -71,11 +79,27 @@ final class ChatMemoryStore {
     func indexConversation(_ conversation: Conversation) async {
         guard Self.isEnabled else { return }
         let exchanges = Self.exchanges(from: conversation.messages)
-        let alreadyIndexed = indexedExchangeCounts[conversation.id] ?? 0
+        var alreadyIndexed = indexedExchangeCounts[conversation.id] ?? 0
+
+        // If the already-indexed portion changed (an edited/re-rolled earlier
+        // turn), its old vectors are stale — drop them and re-embed from
+        // scratch. A pure append leaves the prefix signature untouched.
+        let priorPrefixSignature = Self.signature(of: exchanges.prefix(alreadyIndexed))
+        if alreadyIndexed > 0, let stored = contentSignatures[conversation.id], stored != priorPrefixSignature {
+            entries.removeAll { $0.conversationID == conversation.id }
+            alreadyIndexed = 0
+        }
+
         guard exchanges.count > alreadyIndexed else {
-            // Still refresh the title — it's AI-generated shortly after the
-            // first exchange, and recalled snippets should show the real one.
-            refreshTitle(conversation)
+            // Nothing new to embed. Still refresh the title — it's AI-generated
+            // shortly after the first exchange, and recalled snippets should
+            // show the real one — and persist if anything actually changed.
+            let titleChanged = refreshTitle(conversation)
+            let newSignature = Self.signature(of: exchanges[...])
+            let signatureChanged = contentSignatures[conversation.id] != newSignature
+            contentSignatures[conversation.id] = newSignature
+            indexedExchangeCounts[conversation.id] = exchanges.count
+            if titleChanged || signatureChanged { save() }
             return
         }
         guard await provider.probe() else { return }
@@ -92,8 +116,23 @@ final class ChatMemoryStore {
             ))
         }
         indexedExchangeCounts[conversation.id] = exchanges.count
+        contentSignatures[conversation.id] = Self.signature(of: exchanges[...])
         refreshTitle(conversation)
         save()
+    }
+
+    /// Order-sensitive, launch-stable signature of a run of exchanges (FNV-1a).
+    /// Swift's `hashValue` is per-process randomized, so it can't be persisted
+    /// and compared across launches — this can.
+    private static func signature<S: Sequence>(of exchanges: S) -> Int where S.Element == String {
+        var hash: UInt64 = 1469598103934665603
+        for exchange in exchanges {
+            for byte in exchange.utf8 {
+                hash = (hash ^ UInt64(byte)) &* 1099511628211
+            }
+            hash = (hash ^ 0x1F) &* 1099511628211 // record separator
+        }
+        return Int(bitPattern: UInt(truncatingIfNeeded: hash))
     }
 
     /// Backfills the index for conversations updated since they were last
@@ -110,6 +149,7 @@ final class ChatMemoryStore {
         let before = entries.count
         entries.removeAll { $0.conversationID == conversationID }
         indexedExchangeCounts[conversationID] = nil
+        contentSignatures[conversationID] = nil
         if entries.count != before { save() }
     }
 
@@ -117,6 +157,7 @@ final class ChatMemoryStore {
     func forgetEverything() {
         entries.removeAll()
         indexedExchangeCounts.removeAll()
+        contentSignatures.removeAll()
         save()
     }
 
@@ -157,10 +198,16 @@ final class ChatMemoryStore {
         return result
     }
 
-    private func refreshTitle(_ conversation: Conversation) {
+    /// Updates cached titles for a conversation's entries. Returns whether any
+    /// entry actually changed, so callers can decide whether to persist.
+    @discardableResult
+    private func refreshTitle(_ conversation: Conversation) -> Bool {
+        var changed = false
         for i in entries.indices where entries[i].conversationID == conversation.id && entries[i].title != conversation.title {
             entries[i].title = conversation.title
+            changed = true
         }
+        return changed
     }
 
     // MARK: - Persistence
@@ -170,10 +217,15 @@ final class ChatMemoryStore {
               let archive = try? JSONDecoder().decode(ChatMemoryArchive.self, from: data) else { return }
         entries = archive.entries
         indexedExchangeCounts = archive.indexedExchangeCounts
+        contentSignatures = archive.contentSignatures ?? [:]
     }
 
     private func save() {
-        let archive = ChatMemoryArchive(entries: entries, indexedExchangeCounts: indexedExchangeCounts)
+        let archive = ChatMemoryArchive(
+            entries: entries,
+            indexedExchangeCounts: indexedExchangeCounts,
+            contentSignatures: contentSignatures
+        )
         if let data = try? JSONEncoder().encode(archive) {
             try? data.write(to: fileURL, options: .atomic)
         }

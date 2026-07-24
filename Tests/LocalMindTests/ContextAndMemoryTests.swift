@@ -172,6 +172,49 @@ final class ChatMemoryStoreTests: XCTestCase {
         XCTAssertFalse(selfHits.contains { $0.title == "Swift Sorting" })
     }
 
+    func testAppendingANewExchangeAddsOneEntry() async throws {
+        guard EmbeddingService.isAvailable else {
+            throw XCTSkip("On-device embeddings unavailable on this machine")
+        }
+        let id = UUID()
+        var convo = Conversation(id: id, title: "Chat", messages: [
+            ChatMessage(role: .user, content: "First question about Swift arrays?"),
+            ChatMessage(role: .assistant, content: "First answer about sorting.")
+        ])
+        await store.indexConversation(convo)
+        XCTAssertEqual(store.entryCount, 1)
+
+        // A brand-new turn appends exactly one memory, not a re-embed of both.
+        convo.messages.append(ChatMessage(role: .user, content: "Second question about dictionaries?"))
+        convo.messages.append(ChatMessage(role: .assistant, content: "Second answer about keys."))
+        await store.indexConversation(convo)
+        XCTAssertEqual(store.entryCount, 2)
+    }
+
+    func testEditingAnEarlierTurnReindexesInsteadOfGoingStale() async throws {
+        guard EmbeddingService.isAvailable else {
+            throw XCTSkip("On-device embeddings unavailable on this machine")
+        }
+        let id = UUID()
+        var convo = Conversation(id: id, title: "Chat", messages: [
+            ChatMessage(role: .user, content: "Tell me about penguins."),
+            ChatMessage(role: .assistant, content: "Penguins are flightless birds.")
+        ])
+        await store.indexConversation(convo)
+        XCTAssertEqual(store.entryCount, 1)
+
+        // Editing the first turn's content (same exchange count) must replace
+        // the stale vector, not leave the old text remembered.
+        convo.messages[0].content = "Tell me about volcanoes instead."
+        convo.messages[1].content = "Volcanoes are ruptures in the Earth's crust."
+        await store.indexConversation(convo)
+
+        XCTAssertEqual(store.entryCount, 1, "the edited exchange should replace, not accumulate")
+        let volcano = await store.recall("volcano eruptions and lava", excluding: UUID(), topK: 3)
+        XCTAssertTrue(volcano.contains { $0.text.contains("Volcanoes") },
+                      "the edited content should now be what's remembered")
+    }
+
     func testForgetRemovesConversation() async throws {
         guard EmbeddingService.isAvailable else {
             throw XCTSkip("On-device embeddings unavailable on this machine")
