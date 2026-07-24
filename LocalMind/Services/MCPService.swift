@@ -43,10 +43,13 @@ final class MCPService {
     private(set) var auditLog: [MCPToolCallRecord] = []
     private static let maxAuditRecords = 250
 
-    /// A tool call awaiting the user's approve/deny decision. The UI binds to
-    /// this and invokes `respond`. Only one is ever pending because tool calls
-    /// run sequentially.
+    /// The tool call currently awaiting the user's approve/deny decision. The
+    /// UI binds to this and invokes `respond`. Additional requests that arrive
+    /// while one is showing wait in `approvalQueue` — the arena runs agents
+    /// concurrently, so tool calls are no longer strictly sequential and a
+    /// single slot would drop (and hang) all but the last.
     var pendingApproval: MCPToolApprovalRequest?
+    private var approvalQueue: [MCPToolApprovalRequest] = []
 
     /// Exposed tool names the user chose to "always allow", persisted across
     /// launches. Revocable in one tap from MCP settings.
@@ -404,12 +407,11 @@ final class MCPService {
                 settled = true
                 continuation.resume(returning: value)
             }
-            pendingApproval = MCPToolApprovalRequest(
+            let request = MCPToolApprovalRequest(
                 toolName: toolName,
                 serverName: serverName,
                 argumentsPreview: preview
             ) { [weak self] decision in
-                self?.pendingApproval = nil
                 switch decision {
                 case .allowOnce:
                     finish(true)
@@ -420,8 +422,25 @@ final class MCPService {
                 case .deny:
                     finish(false)
                 }
+                self?.showNextApproval()
             }
+            enqueueApproval(request)
         }
+    }
+
+    /// Shows `request` now if nothing is pending, otherwise queues it so
+    /// concurrent tool calls prompt one at a time instead of clobbering.
+    private func enqueueApproval(_ request: MCPToolApprovalRequest) {
+        if pendingApproval == nil {
+            pendingApproval = request
+        } else {
+            approvalQueue.append(request)
+        }
+    }
+
+    /// Advances to the next queued approval after the current one is answered.
+    private func showNextApproval() {
+        pendingApproval = approvalQueue.isEmpty ? nil : approvalQueue.removeFirst()
     }
 
     @discardableResult
