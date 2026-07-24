@@ -497,6 +497,58 @@ final class ChatGenerationServiceTests: XCTestCase {
         XCTAssertEqual(decoded.toolRuns?.first?.arguments, "{\"q\":\"swift\"}")
     }
 
+    // MARK: Automation (App Intents / Shortcuts)
+
+    func testAutomationReturnsTheAnswerText() async throws {
+        mock.chunks = ["The answer ", "is 42."]
+
+        let answer = try await generationService.generateForAutomation(prompt: "what is it?")
+
+        XCTAssertEqual(answer, "The answer is 42.")
+        // Kept by default, so an automated ask leaves a record like any other.
+        XCTAssertTrue(dataStore.conversations.contains { $0.messages.last?.content == "The answer is 42." })
+    }
+
+    func testAutomationCanRunWithoutTouchingHistory() async throws {
+        mock.chunks = ["Quiet answer."]
+        let before = dataStore.conversations.count
+
+        let answer = try await generationService.generateForAutomation(
+            prompt: "ask quietly",
+            keepInHistory: false
+        )
+
+        XCTAssertEqual(answer, "Quiet answer.")
+        XCTAssertEqual(dataStore.conversations.count, before,
+                       "a Shortcut running on a loop shouldn't fill the sidebar")
+    }
+
+    func testAutomationUsesTheNamedAgent() async throws {
+        let agent = Agent(name: "Editor", emoji: "✏️", systemPrompt: "You edit prose.")
+        dataStore.saveAgent(agent)
+        mock.chunks = ["Edited."]
+
+        _ = try await generationService.generateForAutomation(prompt: "fix this", agentName: "editor")
+
+        // Case-insensitive match, and the agent's persona actually drives it —
+        // an automated ask gets the same treatment as a typed one.
+        XCTAssertTrue(mock.streamCalls.first?.systemPrompt?.contains("You edit prose.") ?? false)
+    }
+
+    func testAutomationThrowsRatherThanReturningAnErrorBubble() async {
+        // The pipeline reports failures as an assistant message, so without
+        // this check a Shortcut would receive "⚠️ Server Error…" as its answer
+        // and paste it into a note as though it were real output.
+        mock.errorToThrow = AIServiceError.serverError("backend exploded")
+
+        do {
+            let answer = try await generationService.generateForAutomation(prompt: "hello")
+            XCTFail("expected a throw, got: \(answer)")
+        } catch {
+            XCTAssertTrue(error is ChatGenerationService.AutomationError)
+        }
+    }
+
     // MARK: Token usage
 
     func testBackendReportedUsageBeatsTheEstimator() async {

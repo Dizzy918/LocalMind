@@ -59,7 +59,9 @@ struct LocalMindApp: App {
     @State private var sharedDataStore: DataStore
     @State private var sharedGenerationService: ChatGenerationService
     @State private var sharedScheduleService: ScheduleService
-    @State private var sharedProfileStore = ProfileStore()
+    // Built in init() alongside the other long-lived services so it can be
+    // handed to AppServices for the automation entry points.
+    @State private var sharedProfileStore: ProfileStore
     @State private var sharedMCPService: MCPService?
     @State private var servicesProvider = ServicesProvider()
     @AppStorage("isDarkMode") private var isDarkMode: Bool = true
@@ -91,11 +93,22 @@ struct LocalMindApp: App {
         // store/manager instances the views get.
         let aiManager = AIServiceManager()
         let dataStore = DataStore()
+        let profileStore = ProfileStore()
         let generationService = ChatGenerationService(dataStore: dataStore, aiManager: aiManager)
         _sharedAIManager = State(initialValue: aiManager)
         _sharedDataStore = State(initialValue: dataStore)
+        _sharedProfileStore = State(initialValue: profileStore)
         _sharedGenerationService = State(initialValue: generationService)
         _sharedScheduleService = State(initialValue: ScheduleService(dataStore: dataStore, generationService: generationService))
+
+        // App Intents are built by the system, outside any SwiftUI
+        // environment, so they read these back instead of being injected.
+        AppServices.register(
+            dataStore: dataStore,
+            aiManager: aiManager,
+            generationService: generationService,
+            profileStore: profileStore
+        )
     }
 
     /// Handles localmind:// URLs — the app's automation surface (Shortcuts,

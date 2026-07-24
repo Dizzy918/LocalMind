@@ -177,6 +177,91 @@ final class ChatGenerationService {
         live[conversationID] = nil
     }
 
+    // MARK: - Automation
+
+    enum AutomationError: Error, LocalizedError {
+        case noBackend
+        case timedOut
+        case empty
+
+        var errorDescription: String? {
+            switch self {
+            case .noBackend: return "No AI backend is connected. Start Ollama or another local server and try again."
+            case .timedOut: return "The model took too long to answer."
+            case .empty: return "The model didn't return an answer."
+            }
+        }
+    }
+
+    /// Runs one prompt to completion and returns the answer text, for callers
+    /// with no UI to stream into (App Intents, Shortcuts).
+    ///
+    /// This deliberately goes through the normal `start` pipeline rather than
+    /// calling the service directly, so an automated ask gets the same
+    /// treatment as a typed one: the agent's persona, project and personal
+    /// context, knowledge-base retrieval, cross-chat memory, and tool calls.
+    /// A one-shot `generateOnce` would quietly skip all of it.
+    ///
+    /// - Parameter keepInHistory: when false the conversation is removed once
+    ///   the answer is read, so a Shortcut that runs on a loop doesn't fill the
+    ///   sidebar.
+    func generateForAutomation(
+        prompt: String,
+        agentName: String? = nil,
+        keepInHistory: Bool = true,
+        timeout: TimeInterval = 180
+    ) async throws -> String {
+        guard hasAvailableBackend else { throw AutomationError.noBackend }
+
+        var conversation = Conversation(
+            title: String(prompt.prefix(50)) + (prompt.count > 50 ? "…" : ""),
+            messages: [ChatMessage(role: .user, content: prompt)]
+        )
+        if let agentName,
+           let agent = dataStore.agents.first(where: { $0.name.caseInsensitiveCompare(agentName) == .orderedSame }) {
+            conversation.agentID = agent.id
+            conversation.emoji = agent.emoji
+        }
+        dataStore.saveConversation(conversation)
+        let id = conversation.id
+
+        start(conversationID: id)
+
+        let deadline = Date().addingTimeInterval(timeout)
+        while isStreaming(id) {
+            if Date() >= deadline {
+                stop(conversationID: id)
+                if !keepInHistory { removeAutomationConversation(id) }
+                throw AutomationError.timedOut
+            }
+            try? await Task.sleep(for: .milliseconds(120))
+        }
+
+        let answer = dataStore.conversations
+            .first { $0.id == id }?
+            .messages.last { $0.role == .assistant }?
+            .content ?? ""
+
+        // The pipeline reports failures as an assistant message rather than by
+        // throwing, so an automation caller has to be told it actually failed
+        // instead of receiving "⚠️ …" as if it were an answer.
+        if answer.hasPrefix("⚠️") {
+            if !keepInHistory { removeAutomationConversation(id) }
+            throw AutomationError.noBackend
+        }
+
+        if !keepInHistory { removeAutomationConversation(id) }
+        markSeen(id)
+
+        guard !answer.isEmpty else { throw AutomationError.empty }
+        return answer
+    }
+
+    private func removeAutomationConversation(_ id: UUID) {
+        guard let conversation = dataStore.conversations.first(where: { $0.id == id }) else { return }
+        dataStore.deleteConversation(conversation)
+    }
+
     // MARK: - Prompt Resolution
 
     /// Builds the effective system prompt for a conversation: global default
