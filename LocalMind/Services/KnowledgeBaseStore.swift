@@ -444,6 +444,114 @@ final class KnowledgeBaseStore {
         save()
     }
 
+    // MARK: - Rebuilding
+
+    /// What a rebuild did, so the UI can be honest about partial results.
+    struct ReindexSummary: Sendable {
+        var rebuilt = 0
+        var failed = 0
+        var chunks = 0
+    }
+
+    /// Re-chunks and re-embeds the whole library.
+    ///
+    /// Two things need this. Improvements to chunking (overlap, for one) only
+    /// reach documents indexed by an older build if they're processed again.
+    /// And switching embedding models used to mean deleting every document —
+    /// the store locks to one embedder because vectors from different models
+    /// aren't comparable, so "Clear all" was the only way out. Rebuilding
+    /// re-embeds everything into the new model's space instead, which is the
+    /// same guarantee without the data loss.
+    ///
+    /// Source text comes from the original file when it's still readable, and
+    /// otherwise from the indexed chunks, so manual imports of files that have
+    /// since moved are rebuilt rather than dropped.
+    @discardableResult
+    func reindexAll(switchingTo providerID: String? = nil) async -> ReindexSummary {
+        guard !documents.isEmpty else { return ReindexSummary() }
+
+        let targetID = providerID ?? embedderID
+        let target = provider(forID: targetID)
+        guard await target.probe() else { return ReindexSummary() }
+
+        isIndexing = true
+        defer { isIndexing = false }
+
+        var summary = ReindexSummary()
+        var rebuiltChunks: [KnowledgeChunk] = []
+        var rebuiltDocuments: [KnowledgeDocument] = []
+
+        for document in documents {
+            guard let text = await sourceText(for: document) else {
+                // Keep what's already indexed rather than silently losing the
+                // document — unless we're changing embedder, where stale
+                // vectors would be incomparable with everything else.
+                if providerID == nil || providerID == embedderID {
+                    rebuiltDocuments.append(document)
+                    rebuiltChunks.append(contentsOf: chunks.filter { $0.documentID == document.id })
+                }
+                summary.failed += 1
+                continue
+            }
+
+            var produced: [KnowledgeChunk] = []
+            for piece in EmbeddingService.chunk(text) {
+                guard let embedding = await target.embed(piece) else { continue }
+                produced.append(KnowledgeChunk(id: UUID(), documentID: document.id, text: piece, embedding: embedding))
+            }
+            guard !produced.isEmpty else {
+                summary.failed += 1
+                continue
+            }
+
+            var updated = document
+            updated.chunkCount = produced.count
+            rebuiltDocuments.append(updated)
+            rebuiltChunks.append(contentsOf: produced)
+            summary.rebuilt += 1
+            summary.chunks += produced.count
+        }
+
+        documents = rebuiltDocuments
+        chunks = rebuiltChunks
+        embedderID = targetID
+        save()
+        return summary
+    }
+
+    /// The text to rebuild a document from: the original file when it's still
+    /// there, otherwise the indexed chunks stitched back together.
+    private func sourceText(for document: KnowledgeDocument) async -> String? {
+        if let path = document.sourcePath,
+           FileManager.default.fileExists(atPath: path),
+           let extracted = await DocumentImporter.extractTextInBackground(from: URL(fileURLWithPath: path)),
+           !extracted.isEmpty {
+            return extracted
+        }
+        let existing = chunks.filter { $0.documentID == document.id }.map(\.text)
+        guard !existing.isEmpty else { return nil }
+        return Self.stitch(existing)
+    }
+
+    /// Rejoins chunks, dropping the overlap a previous indexing run prepended.
+    /// Without this, rebuilding twice would compound the carried context into
+    /// the text a little more each time.
+    nonisolated static func stitch(_ chunks: [String]) -> String {
+        guard var result = chunks.first else { return "" }
+        for chunk in chunks.dropFirst() {
+            // Overlapped chunks are "<tail from previous>\n\n<own content>".
+            if let separator = chunk.range(of: "\n\n") {
+                let carried = String(chunk[..<separator.lowerBound])
+                if !carried.isEmpty, result.hasSuffix(carried) {
+                    result += "\n\n" + String(chunk[separator.upperBound...])
+                    continue
+                }
+            }
+            result += "\n\n" + chunk
+        }
+        return result
+    }
+
     /// Top-`topK` chunks most similar to `query`, each paired with its source
     /// document for citations. `collections` narrows retrieval to those named
     /// collections (nil = every document). Embeds the query with the store's

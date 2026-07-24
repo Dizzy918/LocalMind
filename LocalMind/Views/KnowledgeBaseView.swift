@@ -20,6 +20,9 @@ struct KnowledgeBaseView: View {
     @AppStorage("embeddingProvider") private var embeddingProvider = "apple"
     @State private var importError: String?
     @State private var isDropTargeted = false
+    /// Outcome of the last rebuild, shown inline so a partial result is stated
+    /// rather than looking like a clean success.
+    @State private var rebuildSummary: String?
     // "New collection…" prompt state: which document it's for + the name field.
     @State private var collectionPromptDocument: KnowledgeDocument?
     @State private var newCollectionName = ""
@@ -204,37 +207,87 @@ struct KnowledgeBaseView: View {
         }
     }
 
-    /// Picks the embedding backend (locked once documents exist). Ollama gives
-    /// better retrieval; Apple is the always-available default.
+    /// Whether the picked embedder differs from what the library was indexed
+    /// with — which a rebuild (not a wipe) is now the way to resolve.
+    private var needsEmbedderSwitch: Bool {
+        !store.isEmpty && selectedEmbedderID != store.embedderID
+    }
+
+    /// The picker's selection as a store embedder id.
+    private var selectedEmbedderID: String {
+        embeddingProvider == "ollama" ? "ollama:nomic-embed-text" : "apple"
+    }
+
+    private func rebuild() {
+        rebuildSummary = nil
+        Task {
+            let summary = await store.reindexAll(switchingTo: selectedEmbedderID)
+            if summary.rebuilt == 0 && summary.failed == 0 {
+                rebuildSummary = "Couldn't rebuild — the embedding model isn't available right now."
+            } else if summary.failed > 0 {
+                rebuildSummary = "Rebuilt \(summary.rebuilt) document(s) into \(summary.chunks) chunks. \(summary.failed) couldn't be rebuilt."
+            } else {
+                rebuildSummary = "Rebuilt \(summary.rebuilt) document(s) into \(summary.chunks) chunks."
+            }
+        }
+    }
+
+    /// Picks the embedding backend. Ollama gives better retrieval; Apple is the
+    /// always-available default. Changing it on a non-empty library is a
+    /// rebuild, not a wipe.
     private var embedderRow: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: AppTheme.Spacing.sm) {
                 Image(systemName: "cpu")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
-                if store.isEmpty {
-                    Text("Embedding")
-                        .font(AppTheme.Typography.captionSecondary)
-                        .foregroundStyle(.secondary)
-                    Picker("", selection: $embeddingProvider) {
-                        Text("On-device (Apple)").tag("apple")
-                        Text("Ollama (nomic-embed-text)").tag("ollama")
+                Text("Embedding")
+                    .font(AppTheme.Typography.captionSecondary)
+                    .foregroundStyle(.secondary)
+                Picker("", selection: $embeddingProvider) {
+                    Text("On-device (Apple)").tag("apple")
+                    Text("Ollama (nomic-embed-text)").tag("ollama")
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(maxWidth: 230)
+                .disabled(store.isIndexing)
+
+                Spacer()
+
+                if !store.isEmpty {
+                    Button(needsEmbedderSwitch ? "Rebuild with selection" : "Rebuild index") {
+                        rebuild()
                     }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(maxWidth: 230)
-                    Spacer()
-                } else {
-                    Text("Indexed with \(store.embedderLabel)")
-                        .font(AppTheme.Typography.captionSecondary)
-                        .foregroundStyle(.secondary)
-                    Spacer()
+                    .controlSize(.small)
+                    .disabled(store.isIndexing)
+                    .help(needsEmbedderSwitch
+                          ? "Re-embed every document with the selected model — no need to delete anything"
+                          : "Re-chunk and re-embed every document, picking up indexing improvements")
+
                     Button("Clear all") { store.clear() }
                         .controlSize(.small)
-                        .help("Remove all documents (needed to switch embedding model)")
+                        .disabled(store.isIndexing)
+                        .help("Remove all documents")
                 }
             }
-            if store.isEmpty && embeddingProvider == "ollama" {
+
+            if !store.isEmpty {
+                Text(needsEmbedderSwitch
+                     ? "Currently indexed with \(store.embedderLabel). Rebuilding re-embeds your documents into the selected model — your library is kept."
+                     : "Indexed with \(store.embedderLabel).")
+                    .font(AppTheme.Typography.captionSecondary)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let rebuildSummary {
+                Text(rebuildSummary)
+                    .font(AppTheme.Typography.captionSecondary)
+                    .foregroundStyle(.tertiary)
+            }
+
+            if embeddingProvider == "ollama" {
                 Text("Needs Ollama running with the model pulled: `ollama pull nomic-embed-text`. Falls back to on-device if it's unavailable.")
                     .font(AppTheme.Typography.captionSecondary)
                     .foregroundStyle(.tertiary)

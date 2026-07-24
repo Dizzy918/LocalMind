@@ -102,6 +102,45 @@ final class EmbeddingTests: XCTestCase {
     // mismatch, so mixed-dimension entries silently never matched. Every vector
     // on a device must now share one dimension.
 
+    // MARK: - Stitching chunks back into source text
+    //
+    // Rebuilding a document whose original file has moved has to reconstruct
+    // the text from what's indexed. Overlap makes that non-trivial: naively
+    // rejoining would fold the carried context into the text a little more on
+    // every rebuild.
+
+    func testStitchDropsCarriedOverlap() {
+        let first = "The release ships on Friday."
+        // How applyOverlap builds a chunk: carried tail, blank line, own text.
+        let second = "ships on Friday.\n\nMigrations run first."
+        let stitched = KnowledgeBaseStore.stitch([first, second])
+
+        XCTAssertEqual(stitched, "The release ships on Friday.\n\nMigrations run first.")
+        XCTAssertEqual(stitched.components(separatedBy: "ships on Friday.").count - 1, 1,
+                       "the carried sentence must appear once, not twice")
+    }
+
+    func testStitchLeavesNonOverlappedChunksAlone() {
+        // Documents indexed before overlap existed must rejoin unchanged.
+        let stitched = KnowledgeBaseStore.stitch(["Alpha content.", "Beta content."])
+        XCTAssertEqual(stitched, "Alpha content.\n\nBeta content.")
+    }
+
+    func testStitchIsStableAcrossRepeatedRebuilds() {
+        // Chunk → stitch → chunk → stitch must converge, or each rebuild would
+        // grow the document.
+        let source = (1...12).map { "Paragraph number \($0) with enough words to matter." }
+            .joined(separator: "\n\n")
+        let once = KnowledgeBaseStore.stitch(EmbeddingService.chunk(source, maxChars: 120, overlapChars: 40))
+        let twice = KnowledgeBaseStore.stitch(EmbeddingService.chunk(once, maxChars: 120, overlapChars: 40))
+        XCTAssertEqual(once, twice)
+    }
+
+    func testStitchHandlesEdgeCases() {
+        XCTAssertEqual(KnowledgeBaseStore.stitch([]), "")
+        XCTAssertEqual(KnowledgeBaseStore.stitch(["only"]), "only")
+    }
+
     // MARK: - Lexical (BM25) search
 
     private func lexicalCorpus() -> (index: LexicalIndex, ids: [UUID]) {
