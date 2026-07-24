@@ -497,6 +497,76 @@ final class ChatGenerationServiceTests: XCTestCase {
         XCTAssertEqual(decoded.toolRuns?.first?.arguments, "{\"q\":\"swift\"}")
     }
 
+    // MARK: Token usage
+
+    func testBackendReportedUsageBeatsTheEstimator() async {
+        // Ollama reports real counts on its final chunk. When it does, the
+        // stats must use them (and eval_duration) instead of TokenEstimator.
+        mock.scriptedRounds = [[
+            .text("A short answer."),
+            .usage(AIUsage(promptTokens: 40, completionTokens: 20, generationSeconds: 2.0))
+        ]]
+
+        let conversation = makeConversation()
+        generationService.start(conversationID: conversation.id)
+        await waitForFinish(conversation.id)
+
+        let last = storedConversation(conversation.id)?.messages.last
+        XCTAssertEqual(last?.promptTokens, 40)
+        XCTAssertEqual(last?.completionTokens, 20)
+        XCTAssertEqual(last?.tokensPerSecond ?? 0, 10.0, accuracy: 0.001,
+                       "20 tokens over the backend's 2s of generation")
+        XCTAssertTrue(last?.hasMeasuredTokens ?? false)
+    }
+
+    func testUsageIsSummedAcrossToolRounds() async throws {
+        // Each tool round is its own backend call, so the answer's cost is
+        // every round added together.
+        mock.scriptedRounds = [
+            [.text("Checking."),
+             .toolCalls([AIToolCall(id: "c1", name: "peek", arguments: "{}")]),
+             .usage(AIUsage(promptTokens: 10, completionTokens: 5, generationSeconds: 1.0))],
+            [.text("Done."),
+             .usage(AIUsage(promptTokens: 30, completionTokens: 15, generationSeconds: 2.0))]
+        ]
+
+        let outcome = try await aiManager.streamChatWithTools(
+            service: mock,
+            messages: [ChatMessage(role: .user, content: "go")],
+            systemPrompt: "s",
+            modelOverride: nil,
+            parameters: .default,
+            tools: [tool("peek")],
+            onDelta: { _ in }
+        )
+
+        XCTAssertEqual(outcome.usage?.promptTokens, 40)
+        XCTAssertEqual(outcome.usage?.completionTokens, 20)
+        XCTAssertEqual(outcome.usage?.generationSeconds ?? 0, 3.0, accuracy: 0.001)
+    }
+
+    func testBackendWithoutUsageFallsBackToTheEstimator() async {
+        // Apple Intelligence and several OpenAI-compatible servers report
+        // nothing — the stats must still appear, just estimated.
+        mock.chunks = ["Some answer text here."]
+
+        let conversation = makeConversation()
+        generationService.start(conversationID: conversation.id)
+        await waitForFinish(conversation.id)
+
+        let last = storedConversation(conversation.id)?.messages.last
+        XCTAssertNil(last?.completionTokens)
+        XCTAssertFalse(last?.hasMeasuredTokens ?? true)
+    }
+
+    func testMissingCountsAreNotTreatedAsZero() {
+        // A backend reporting nothing must not drag a real total down to 0.
+        XCTAssertNil(sum(nil as Int?, nil as Int?))
+        XCTAssertEqual(sum(5, nil), 5)
+        XCTAssertEqual(sum(nil, 7), 7)
+        XCTAssertEqual(sum(5, 7), 12)
+    }
+
     func testToolRunPrettyPrintsArgumentsAndToleratesGarbage() {
         let valid = ToolRun(name: "t", arguments: "{\"b\":2,\"a\":1}", result: "ok")
         XCTAssertTrue(valid.formattedArguments.contains("\n"), "valid JSON is pretty-printed")
@@ -577,6 +647,41 @@ final class ThinkBlockStrippingTests: XCTestCase {
     }
 }
 
+// MARK: - Backend usage decoding
+
+final class BackendUsageDecodingTests: XCTestCase {
+
+    func testOllamaFinalChunkYieldsRealCounts() throws {
+        // The shape Ollama actually sends on its last chunk. These fields were
+        // previously dropped, so every tok/s figure came from a heuristic.
+        let json = #"{"message":{"content":""},"done":true,"prompt_eval_count":26,"eval_count":298,"eval_duration":4883583000}"#
+        let chunk = try JSONDecoder().decode(OllamaChatChunk.self, from: json.data(using: .utf8)!)
+
+        let usage = try XCTUnwrap(chunk.usage)
+        XCTAssertEqual(usage.promptTokens, 26)
+        XCTAssertEqual(usage.completionTokens, 298)
+        // eval_duration is nanoseconds — ~4.88s.
+        XCTAssertEqual(usage.generationSeconds ?? 0, 4.883583, accuracy: 0.0001)
+    }
+
+    func testOllamaMidStreamChunkReportsNoUsage() throws {
+        let json = #"{"message":{"content":"hi"},"done":false}"#
+        let chunk = try JSONDecoder().decode(OllamaChatChunk.self, from: json.data(using: .utf8)!)
+        XCTAssertNil(chunk.usage, "only the final chunk carries counts")
+    }
+
+    func testOpenAIUsageOnlyChunkDecodesWithoutChoices() throws {
+        // A usage-only final chunk may omit `choices` entirely; decoding must
+        // survive it or the token counts are lost.
+        let json = #"{"id":"x","usage":{"prompt_tokens":11,"completion_tokens":22}}"#
+        let chunk = try JSONDecoder().decode(OpenAIStreamChunk.self, from: json.data(using: .utf8)!)
+
+        let usage = try XCTUnwrap(chunk.usage?.asUsage)
+        XCTAssertEqual(usage.promptTokens, 11)
+        XCTAssertEqual(usage.completionTokens, 22)
+    }
+}
+
 // MARK: - OpenAI streaming tool-call reassembly
 
 final class OpenAIToolCallAssemblerTests: XCTestCase {
@@ -585,7 +690,7 @@ final class OpenAIToolCallAssemblerTests: XCTestCase {
     private func fragments(_ json: String) -> [OpenAIStreamChunk.OpenAIToolCall] {
         let data = json.data(using: .utf8)!
         let chunk = try! JSONDecoder().decode(OpenAIStreamChunk.self, from: data)
-        return chunk.choices.first?.delta.toolCalls ?? []
+        return chunk.choices?.first?.delta.toolCalls ?? []
     }
 
     func testReassemblesFragmentedNameAndArguments() {

@@ -53,6 +53,9 @@ struct ToolAugmentedAnswer: Sendable {
     var displayText: String
     /// Tools that ran, in call order.
     var toolRuns: [ToolRun]
+    /// Backend-reported token usage, summed across rounds. nil when no backend
+    /// volunteered counts, in which case callers fall back to TokenEstimator.
+    var usage: AIUsage?
 }
  
  // MARK: - AI Backend
@@ -114,11 +117,40 @@ protocol AIServiceProtocol: Sendable {
     func generateOnce(prompt: String, systemPrompt: String?, modelOverride: String?, parameters: AIParameters?, tools: [AITool]?) async throws -> String
 }
 
+/// Token counts reported by the backend itself. Preferred over
+/// `TokenEstimator`, which is a heuristic — when the server tells us what it
+/// actually processed, the stats should say so rather than guess.
+struct AIUsage: Sendable, Equatable {
+    var promptTokens: Int?
+    var completionTokens: Int?
+    /// Time the backend spent generating (not counting prompt evaluation),
+    /// which yields a truer tokens/sec than wall-clock does.
+    var generationSeconds: Double?
+
+    var isEmpty: Bool {
+        promptTokens == nil && completionTokens == nil && generationSeconds == nil
+    }
+}
+
+/// Adds two optionals, treating nil as "no value reported" rather than zero —
+/// so a backend that reports nothing doesn't turn a real total into 0.
+func sum(_ lhs: Int?, _ rhs: Int?) -> Int? {
+    guard lhs != nil || rhs != nil else { return nil }
+    return (lhs ?? 0) + (rhs ?? 0)
+}
+
+func sum(_ lhs: Double?, _ rhs: Double?) -> Double? {
+    guard lhs != nil || rhs != nil else { return nil }
+    return (lhs ?? 0) + (rhs ?? 0)
+}
+
 /// A chunk of streaming response from an AI model.
 enum AIStreamChunk: Sendable {
     case text(String)
     case toolCall(AIToolCall)
     case toolCalls([AIToolCall])
+    /// Backend-reported token usage, emitted at most once near the end.
+    case usage(AIUsage)
     case done
 }
 

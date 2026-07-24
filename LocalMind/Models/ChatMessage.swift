@@ -113,6 +113,14 @@ nonisolated struct ChatMessage: Identifiable, Codable, Sendable {
     // Performance stats for assistant messages.
     var generationSeconds: Double?
     var tokensPerSecond: Double?
+    /// Token counts as reported by the backend. nil means the backend didn't
+    /// say, and any displayed count is TokenEstimator's approximation.
+    var promptTokens: Int?
+    var completionTokens: Int?
+
+    /// Whether the stats came from the backend rather than being estimated —
+    /// lets the UI avoid presenting a guess as though it were measured.
+    var hasMeasuredTokens: Bool { completionTokens != nil }
 
     init(id: UUID = UUID(), role: MessageRole, content: String, imageData: Data? = nil, attachedFileName: String? = nil, attachedFileContent: String? = nil, timestamp: Date = Date()) {
         self.id = id

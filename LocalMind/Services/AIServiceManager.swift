@@ -213,6 +213,17 @@ final class AIServiceManager {
         var displayText = ""
         var toolRuns: [ToolRun] = []
         var round = 0
+        /// Usage accumulates across tool rounds — each round is a separate
+        /// backend call, and the answer's cost is all of them together.
+        var totalUsage: AIUsage?
+
+        func absorb(_ usage: AIUsage) {
+            var running = totalUsage ?? AIUsage()
+            running.promptTokens = sum(running.promptTokens, usage.promptTokens)
+            running.completionTokens = sum(running.completionTokens, usage.completionTokens)
+            running.generationSeconds = sum(running.generationSeconds, usage.generationSeconds)
+            totalUsage = running
+        }
 
         func answer() -> ToolAugmentedAnswer {
             ToolAugmentedAnswer(
@@ -221,7 +232,8 @@ final class AIServiceManager {
                     .filter { !$0.isEmpty }
                     .joined(separator: "\n\n"),
                 displayText: displayText,
-                toolRuns: toolRuns
+                toolRuns: toolRuns,
+                usage: totalUsage
             )
         }
 
@@ -249,6 +261,8 @@ final class AIServiceManager {
                     pending.append(call)
                 case .toolCalls(let calls):
                     pending.append(contentsOf: calls)
+                case .usage(let usage):
+                    absorb(usage)
                 case .done:
                     break
                 }
