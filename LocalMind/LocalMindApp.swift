@@ -21,6 +21,24 @@ extension Notification.Name {
     static let showTabPicker = Notification.Name("LocalMind.showTabPicker")
 }
 
+/// Adds "New Window" back to the File menu.
+///
+/// Lives in its own `Commands` type because it needs `@Environment(\.openWindow)`,
+/// which only resolves inside a `Commands`/`View` body — the app's `.commands`
+/// closure has no environment of its own.
+struct NewWindowCommand: Commands {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandGroup(after: .newItem) {
+            Button("New Window") {
+                openWindow(id: "main")
+            }
+            .keyboardShortcut("n", modifiers: [.command, .shift])
+        }
+    }
+}
+
 /// Receives "Ask LocalMind" from the system Services menu (selected text in
 /// any app). Registered as `NSApp.servicesProvider`; the NSMessage in
 /// Config/Info.plist maps to `askLocalMind:userData:error:`.
@@ -244,6 +262,14 @@ struct LocalMindApp: App {
                     .keyboardShortcut("t", modifiers: [.command, .shift])
                 }
             }
+
+            // Restores the way back to a window. Replacing `.newItem` above
+            // removed AppKit's own New Window item, and because the MenuBarExtra
+            // keeps the process alive after the last window closes, the app
+            // could end up running with no window and no way to open one —
+            // state restoration then reopens it that way on the next launch too.
+            NewWindowCommand()
+
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates…") {
                     UpdaterService.shared.checkForUpdates()
