@@ -148,20 +148,114 @@ final class AIServiceManager {
         isCheckingAvailability = false
     }
 
-    /// Executes a batch of tool calls via the MCP service and invokes
-    /// `onResult` for each, with a human-readable summary for chat injection.
-    func executeToolCalls(_ calls: [AIToolCall], onResult: (String, String) -> Void) async {
-        guard let mcpService else { return }
+    /// Runs tool calls and returns their results paired with the originating
+    /// call id, so they can be fed back to the model as `.tool` messages.
+    func runToolCalls(_ calls: [AIToolCall]) async -> [AIToolResult] {
+        guard let mcpService else {
+            return calls.map { AIToolResult(toolCallId: $0.id, content: "No tool backend is connected.", isError: true) }
+        }
+        var results: [AIToolResult] = []
         for call in calls {
             do {
                 let argsData = call.arguments.data(using: .utf8) ?? Data()
                 let args = (try? JSONSerialization.jsonObject(with: argsData) as? [String: Any]) ?? [:]
                 let content = try await mcpService.callTool(name: call.name, arguments: args)
                 let textParts = content.compactMap { $0.text }.joined(separator: "\n")
-                onResult(call.name, textParts.isEmpty ? "(empty result)" : textParts)
+                results.append(AIToolResult(toolCallId: call.id, content: textParts.isEmpty ? "(empty result)" : textParts))
             } catch {
-                onResult(call.name, "Error — \(error.localizedDescription)")
+                results.append(AIToolResult(toolCallId: call.id, content: "Error — \(error.localizedDescription)", isError: true))
             }
+        }
+        return results
+    }
+
+    /// Streams an assistant turn, transparently running any MCP tool calls the
+    /// model makes and feeding the results back for a follow-up turn — looping
+    /// until the model answers without calling tools (or `maxToolRounds` is
+    /// reached). This is what makes tools actually *usable*: the previous code
+    /// dumped raw tool output into the message and never let the model read it.
+    ///
+    /// Each tool call is gated (and audited) downstream in `MCPService.callTool`
+    /// via the user's approval setting — a denial simply comes back as an error
+    /// result the model can react to, so no approval logic lives here.
+    ///
+    /// The tool-call/result turns live only in a local working list; only the
+    /// visible text (deltas via `onDelta`, plus a compact `_🔧 name_` marker per
+    /// tool round) is surfaced. Returns the full accumulated visible text
+    /// (including `<think>` blocks) so the caller can compute stats.
+    func streamChatWithTools(
+        service: any AIServiceProtocol,
+        messages: [ChatMessage],
+        systemPrompt: String,
+        modelOverride: String?,
+        parameters: AIParameters,
+        tools: [AITool]?,
+        maxToolRounds: Int = 5,
+        shouldContinue: @escaping () -> Bool = { true },
+        onDelta: (String) -> Void
+    ) async throws -> String {
+        var working = messages
+        var rawText = ""
+        var round = 0
+
+        while true {
+            var turnText = ""
+            var pending: [AIToolCall] = []
+
+            for try await chunk in service.streamChat(
+                messages: working,
+                systemPrompt: systemPrompt,
+                modelOverride: modelOverride,
+                parameters: parameters,
+                tools: tools
+            ) {
+                if !shouldContinue() { return rawText }
+                switch chunk {
+                case .text(let text):
+                    turnText += text
+                    rawText += text
+                    onDelta(text)
+                case .toolCall(let call):
+                    pending.append(call)
+                case .toolCalls(let calls):
+                    pending.append(contentsOf: calls)
+                case .done:
+                    break
+                }
+            }
+
+            // Drop malformed calls (empty names) defensively.
+            pending = pending.filter { !$0.name.isEmpty }
+
+            // No tools available, none requested, or we've hit the safety cap:
+            // this turn is the final answer.
+            guard tools != nil, !pending.isEmpty, round < maxToolRounds else {
+                return rawText
+            }
+            round += 1
+            if !shouldContinue() { return rawText }
+
+            // Record the assistant's tool-call turn so the follow-up round has
+            // coherent context, and show a compact marker of what ran.
+            var assistantTurn = ChatMessage(role: .assistant, content: turnText)
+            assistantTurn.toolCalls = pending
+            working.append(assistantTurn)
+
+            let marker = "\n\n_🔧 \(pending.map(\.name).joined(separator: ", "))_\n\n"
+            rawText += marker
+            onDelta(marker)
+
+            // Execute (each call is approval-gated inside MCPService.callTool)
+            // and feed the results back as tool messages.
+            let results = await runToolCalls(pending)
+            for (call, result) in zip(pending, results) {
+                var toolMessage = ChatMessage(role: .tool, content: result.content)
+                toolMessage.toolCallID = call.id
+                working.append(toolMessage)
+            }
+
+            if !shouldContinue() { return rawText }
+            // Loop: stream the model's follow-up turn with the results in context.
         }
     }
 

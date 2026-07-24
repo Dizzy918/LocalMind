@@ -88,6 +88,25 @@ actor OpenAICompatibleService: AIServiceProtocol {
                             "role": msg.role.rawValue,
                             "content": msg.content,
                         ]
+                        // Tool result turns correlate back to their call by id.
+                        if msg.role == .tool, let callID = msg.toolCallID {
+                            msgDict["tool_call_id"] = callID
+                        }
+                        // An assistant turn that requested tools carries them so
+                        // the follow-up round has coherent context.
+                        if let toolCalls = msg.toolCalls, !toolCalls.isEmpty {
+                            msgDict["tool_calls"] = toolCalls.map { call in
+                                [
+                                    "id": call.id,
+                                    "type": "function",
+                                    "function": [
+                                        "name": call.name,
+                                        // OpenAI expects arguments as a JSON string.
+                                        "arguments": call.arguments,
+                                    ],
+                                ] as [String: Any]
+                            }
+                        }
                         // If there's an image attached, encode as a multi-part content array
                         if let imgData = msg.imageData {
                             let base64 = imgData.base64EncodedString()
@@ -151,6 +170,14 @@ actor OpenAICompatibleService: AIServiceProtocol {
                         throw AIServiceError.serverError("OpenAI-compatible server returned non-200 status")
                     }
 
+                    // OpenAI streams tool calls as deltas keyed by `index`: the
+                    // first fragment carries id + name, later fragments append
+                    // `arguments` a few characters at a time. Accumulate them
+                    // and emit complete calls once, at the end — yielding each
+                    // raw fragment (as the old code did) produced calls with
+                    // empty names and truncated JSON.
+                    var assembler = OpenAIToolCallAssembler()
+
                     for try await line in bytes.lines {
                         if Task.isCancelled { break }
 
@@ -161,7 +188,6 @@ actor OpenAICompatibleService: AIServiceProtocol {
 
                         // Stream termination signal
                         if payload == "[DONE]" {
-                            continuation.yield(.done)
                             break
                         }
 
@@ -171,15 +197,9 @@ actor OpenAICompatibleService: AIServiceProtocol {
                             continue
                         }
 
-                        // Handle tool calls
+                        // Accumulate streamed tool-call fragments by index.
                         if let toolCalls = chunk.choices.first?.delta.toolCalls {
-                            for toolCall in toolCalls {
-                                continuation.yield(.toolCall(AIToolCall(
-                                    id: toolCall.id ?? UUID().uuidString,
-                                    name: toolCall.function?.name ?? "",
-                                    arguments: toolCall.function?.arguments ?? "{}"
-                                )))
-                            }
+                            assembler.ingest(toolCalls)
                         }
 
                         if let content = chunk.choices.first?.delta.content, !content.isEmpty {
@@ -187,6 +207,12 @@ actor OpenAICompatibleService: AIServiceProtocol {
                         }
                     }
 
+                    // Flush the reassembled tool calls, in index order.
+                    let completed = assembler.assembled()
+                    if !completed.isEmpty {
+                        continuation.yield(.toolCalls(completed))
+                    }
+                    continuation.yield(.done)
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -208,6 +234,51 @@ actor OpenAICompatibleService: AIServiceProtocol {
             }
         }
         return result
+    }
+}
+
+// MARK: - Streaming tool-call reassembly
+
+/// Mutable accumulator for a tool call being streamed in `index`-keyed
+/// fragments across many SSE chunks.
+private struct PartialToolCall {
+    var id: String?
+    var name: String?
+    var arguments: String = ""
+}
+
+/// Reassembles OpenAI streaming tool-call deltas into complete calls. The
+/// server sends one fragment per SSE chunk keyed by `index`: the first carries
+/// `id` + `name`, later ones append a few characters of `arguments`. Extracted
+/// from the stream loop so the merge logic is unit-testable without a live
+/// server. Fragments with no usable name are dropped.
+struct OpenAIToolCallAssembler {
+    private var byIndex: [Int: PartialToolCall] = [:]
+    /// First-seen order of indices, so calls come out the way they arrived
+    /// even if a server numbers them oddly.
+    private var order: [Int] = []
+
+    mutating func ingest(_ fragments: [OpenAIStreamChunk.OpenAIToolCall]) {
+        for fragment in fragments {
+            let index = fragment.index ?? 0
+            if byIndex[index] == nil { order.append(index) }
+            var partial = byIndex[index] ?? PartialToolCall()
+            if let id = fragment.id { partial.id = id }
+            if let name = fragment.function?.name { partial.name = name }
+            if let args = fragment.function?.arguments { partial.arguments += args }
+            byIndex[index] = partial
+        }
+    }
+
+    func assembled() -> [AIToolCall] {
+        order.compactMap { index -> AIToolCall? in
+            guard let partial = byIndex[index], let name = partial.name, !name.isEmpty else { return nil }
+            return AIToolCall(
+                id: partial.id ?? UUID().uuidString,
+                name: name,
+                arguments: partial.arguments.isEmpty ? "{}" : partial.arguments
+            )
+        }
     }
 }
 
@@ -241,6 +312,7 @@ nonisolated struct OpenAIStreamChunk: Decodable, Sendable {
     }
 
     nonisolated struct OpenAIToolCall: Decodable, Sendable {
+        let index: Int?
         let id: String?
         let type: String?
         let function: OpenAIFunctionCall?

@@ -74,6 +74,22 @@ actor OllamaService: AIServiceProtocol {
                             "role": msg.role.rawValue,
                             "content": msg.content,
                         ]
+                        // An assistant turn that requested tools carries them back
+                        // so the follow-up round has coherent context. Ollama
+                        // takes arguments as a JSON object (not a string), so
+                        // decode our stored string form back into one.
+                        if let toolCalls = msg.toolCalls, !toolCalls.isEmpty {
+                            msgDict["tool_calls"] = toolCalls.map { call -> [String: Any] in
+                                let argsObject = call.arguments.data(using: .utf8)
+                                    .flatMap { try? JSONSerialization.jsonObject(with: $0) } ?? [:]
+                                return [
+                                    "function": [
+                                        "name": call.name,
+                                        "arguments": argsObject,
+                                    ],
+                                ]
+                            }
+                        }
                         // If there's an image attached, convert it to Base64 for Ollama
                         if let imgData = msg.imageData {
                             msgDict["images"] = [imgData.base64EncodedString()]
@@ -99,7 +115,7 @@ actor OllamaService: AIServiceProtocol {
                     // Add tools if provided (Ollama supports tools via the "tools" parameter)
                     if let tools = tools, !tools.isEmpty {
                         let ollamaTools = tools.map { tool -> [String: Any] in
-                            var toolDict: [String: Any] = [
+                            [
                                 "type": "function",
                                 "function": [
                                     "name": tool.name,
@@ -107,7 +123,6 @@ actor OllamaService: AIServiceProtocol {
                                     "parameters": tool.inputSchema
                                 ]
                             ]
-                            return toolDict
                         }
                         body["tools"] = ollamaTools
                     }
@@ -147,8 +162,6 @@ actor OllamaService: AIServiceProtocol {
                         }
                         throw AIServiceError.serverError("Ollama returned HTTP \(httpResponse.statusCode): \(errorBody)")
                     }
-
-                    var toolCallBuffer: [String: (name: String, arguments: String)] = [:]
 
                     for try await line in bytes.lines {
                         if Task.isCancelled { break }

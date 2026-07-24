@@ -389,39 +389,27 @@ final class ChatGenerationService {
         let generationStart = Date()
 
         do {
-            var pendingToolCalls: [AIToolCall] = []
-            for try await chunk in service.streamChat(
+            // Streams the answer and runs any MCP tools the model calls,
+            // feeding results back for a follow-up turn until it answers
+            // without tools. The visible text lands in `live` via onDelta.
+            // Tool calls are approval-gated downstream in MCPService.callTool.
+            let rawText = try await aiManager.streamChatWithTools(
+                service: service,
                 messages: recentMessages,
                 systemPrompt: systemPrompt,
                 modelOverride: effectiveModel,
                 parameters: effectiveParameters,
-                tools: tools
-            ) {
-                if Task.isCancelled { break }
-                switch chunk {
-                case .text(let text):
-                    live[conversationID]?.text += text
-                case .toolCall(let call):
-                    pendingToolCalls.append(call)
-                case .toolCalls(let calls):
-                    pendingToolCalls.append(contentsOf: calls)
-                case .done:
-                    break
+                tools: tools,
+                shouldContinue: { !Task.isCancelled },
+                onDelta: { delta in
+                    self.live[conversationID]?.text += delta
                 }
-            }
+            )
 
-            // Past the stream loop everything is gated on cancellation:
-            // stop() already appended the partial message and cleared the
-            // live state, so a late-arriving chunk must not produce a
-            // second, orphaned assistant message.
+            // Past the stream everything is gated on cancellation: stop()
+            // already appended the partial message and cleared the live state,
+            // so a late return must not produce a second, orphaned message.
             if !Task.isCancelled {
-                if !pendingToolCalls.isEmpty {
-                    await aiManager.executeToolCalls(pendingToolCalls) { name, result in
-                        live[conversationID]?.text += "\n\n_🔧 \(name): \(result)_"
-                    }
-                }
-
-                let rawText = live[conversationID]?.text ?? ""
                 let (reasoning, finalText) = rawText.separatingThinkBlocks
                 if !finalText.isEmpty {
                     var assistantMessage = ChatMessage(role: .assistant, content: finalText)
@@ -445,7 +433,6 @@ final class ChatGenerationService {
                         assistantMessage.variants = pending + [finalText]
                         assistantMessage.activeVariantIndex = pending.count
                     }
-                    pendingVariants[conversationID] = nil
 
                     // Re-read the conversation: the user may have renamed it
                     // (or the title/emoji tasks may have written) mid-stream.
@@ -464,6 +451,7 @@ final class ChatGenerationService {
                     Task { await ChatMemoryStore.shared.indexConversation(finished) }
                     scheduleRollingSummary(conversationID: conversationID, excludedCount: selection.excludedCount)
                 }
+                pendingVariants[conversationID] = nil
                 live[conversationID] = nil
             }
         } catch {

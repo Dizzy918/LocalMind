@@ -11,6 +11,10 @@ nonisolated enum MessageRole: String, Codable, Sendable {
     case user
     case assistant
     case system
+    /// A tool's result, fed back to the model so it can answer using the
+    /// output. Only used inside a single generation's working message list —
+    /// tool turns are never persisted into a conversation's history.
+    case tool
 }
 
 /// A knowledge-base passage an answer was grounded in (RAG citation).
@@ -51,6 +55,14 @@ nonisolated struct ChatMessage: Identifiable, Codable, Sendable {
     /// The model's chain-of-thought (<think> blocks), kept separate from the
     /// answer and shown in a collapsed disclosure. nil = no reasoning emitted.
     var reasoning: String?
+
+    /// Tool calls the model requested on this assistant turn. Populated only on
+    /// the ephemeral assistant messages the tool loop feeds back to the model;
+    /// never set on persisted messages.
+    var toolCalls: [AIToolCall]?
+    /// For `.tool` messages, the id of the tool call this result answers, so
+    /// OpenAI-compatible servers can correlate result → call.
+    var toolCallID: String?
 
     // Performance stats for assistant messages.
     var generationSeconds: Double?
