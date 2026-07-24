@@ -116,7 +116,14 @@ enum EmbeddingService {
 
     /// Splits text into retrieval-sized chunks, preferring paragraph
     /// boundaries and hard-splitting any paragraph longer than `maxChars`.
-    static func chunk(_ text: String, maxChars: Int = 700) -> [String] {
+    ///
+    /// Consecutive chunks overlap by roughly `overlapChars` of trailing
+    /// context. Without it, a fact that straddles a boundary is split so that
+    /// neither half carries the whole statement — the classic failure where a
+    /// document plainly contains the answer but retrieval never surfaces it.
+    /// The overlap is prepended to the *next* chunk, so each chunk can be read
+    /// on its own.
+    static func chunk(_ text: String, maxChars: Int = 700, overlapChars: Int = 100) -> [String] {
         let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
         let paragraphs = normalized.components(separatedBy: "\n\n")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -143,7 +150,34 @@ enum EmbeddingService {
             }
         }
         flush()
-        return chunks
+
+        return overlapChars > 0 ? applyOverlap(chunks, overlapChars: overlapChars) : chunks
+    }
+
+    /// Prefixes each chunk with the tail of the one before it, cut at a word
+    /// boundary so the carried context reads as language rather than starting
+    /// mid-word.
+    private static func applyOverlap(_ chunks: [String], overlapChars: Int) -> [String] {
+        guard chunks.count > 1 else { return chunks }
+        var result: [String] = [chunks[0]]
+        for index in 1..<chunks.count {
+            let previous = chunks[index - 1]
+            let tail = trailingContext(of: previous, limit: overlapChars)
+            result.append(tail.isEmpty ? chunks[index] : tail + "\n\n" + chunks[index])
+        }
+        return result
+    }
+
+    /// Up to `limit` trailing characters of `text`, advanced to the next word
+    /// boundary so the excerpt doesn't begin mid-word.
+    private static func trailingContext(of text: String, limit: Int) -> String {
+        guard text.count > limit else { return text }
+        let start = text.index(text.endIndex, offsetBy: -limit)
+        let tail = text[start...]
+        if let space = tail.firstIndex(where: { $0 == " " || $0 == "\n" }) {
+            return String(tail[tail.index(after: space)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return String(tail)
     }
 
     private static func hardSplit(_ text: String, maxChars: Int) -> [String] {

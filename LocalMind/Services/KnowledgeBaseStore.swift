@@ -321,9 +321,18 @@ final class KnowledgeBaseStore {
     /// has documents, since vectors from different models aren't comparable.
     private(set) var embedderID: String = "apple"
 
-    private var chunks: [KnowledgeChunk] = []
+    /// Invalidates the lexical index on every mutation — tying it to the
+    /// property rather than to each call site means a future edit that adds or
+    /// removes chunks can't silently leave a stale keyword index behind.
+    private var chunks: [KnowledgeChunk] = [] {
+        didSet { lexicalIndexCache = nil }
+    }
     private let fileURL: URL
     private var watcher: FolderWatcher?
+
+    /// BM25 index over `chunks`, built lazily and dropped whenever the corpus
+    /// changes. Retrieval blends it with vector similarity.
+    private var lexicalIndexCache: LexicalIndex?
 
     init() {
         let dir = FileManager.default
@@ -439,10 +448,17 @@ final class KnowledgeBaseStore {
     /// document for citations. `collections` narrows retrieval to those named
     /// collections (nil = every document). Embeds the query with the store's
     /// locked provider so the vectors are comparable.
+    /// Hybrid retrieval: a semantic ranking (embeddings) and a keyword ranking
+    /// (BM25) are fused by reciprocal rank. Vector search alone misses exact
+    /// tokens — error codes, filenames, symbols, proper nouns — whose
+    /// embeddings are weak but whose literal match is decisive; keyword search
+    /// alone misses paraphrase. Fusing on rank avoids inventing normalisation
+    /// constants between cosine and BM25, whose scales aren't comparable.
+    ///
+    /// Retrieval still works when embeddings are unavailable on the machine —
+    /// it simply degrades to the keyword leg instead of returning nothing.
     func retrieve(_ query: String, topK: Int = 4, threshold: Double = 0.15, collections: [String]? = nil) async -> [KnowledgeHit] {
-        guard !chunks.isEmpty,
-              let provider = await resolveProvider(),
-              let queryVector = await provider.embed(query) else { return [] }
+        guard !chunks.isEmpty else { return [] }
 
         var searchable = chunks
         if let collections, !collections.isEmpty {
@@ -451,14 +467,68 @@ final class KnowledgeBaseStore {
             }.map(\.id))
             searchable = chunks.filter { allowedDocIDs.contains($0.documentID) }
         }
+        guard !searchable.isEmpty else { return [] }
 
+        // Semantic leg. Thresholded so obviously-unrelated chunks can't ride
+        // into the fused list on rank alone.
+        var vectorRanking: [UUID] = []
+        var vectorScores: [UUID: Double] = [:]
+        if let provider = await resolveProvider(), let queryVector = await provider.embed(query) {
+            let scored = searchable
+                .map { (id: $0.id, score: EmbeddingService.cosineSimilarity(queryVector, $0.embedding)) }
+                .filter { $0.score >= threshold }
+                .sorted { $0.score > $1.score }
+            vectorRanking = scored.map(\.id)
+            vectorScores = Dictionary(scored.map { ($0.id, $0.score) }, uniquingKeysWith: { first, _ in first })
+        }
+
+        // Keyword leg.
+        let lexicalScores = lexicalIndex(for: searchable).scores(for: query)
+        let lexicalRanking = lexicalScores
+            .sorted { $0.value > $1.value }
+            .map(\.key)
+
+        let fused = RankFusion.reciprocalRank([vectorRanking, lexicalRanking])
+        guard !fused.isEmpty else { return [] }
+
+        let byID = Dictionary(searchable.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let names = Dictionary(documents.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
-        return searchable
-            .map { (chunk: $0, score: EmbeddingService.cosineSimilarity(queryVector, $0.embedding)) }
-            .filter { $0.score >= threshold }
-            .sorted { $0.score > $1.score }
+
+        return fused
+            .sorted { lhs, rhs in
+                // Ties break on semantic score so the ordering stays stable
+                // and sensible when both legs agree.
+                lhs.value == rhs.value
+                    ? (vectorScores[lhs.key] ?? 0) > (vectorScores[rhs.key] ?? 0)
+                    : lhs.value > rhs.value
+            }
             .prefix(topK)
-            .map { KnowledgeHit(documentName: names[$0.chunk.documentID] ?? "Document", text: $0.chunk.text, score: $0.score) }
+            .compactMap { entry in
+                guard let chunk = byID[entry.key] else { return nil }
+                return KnowledgeHit(
+                    documentName: names[chunk.documentID] ?? "Document",
+                    text: chunk.text,
+                    // Report the semantic score when there is one; it's what
+                    // the UI has always shown as match strength.
+                    score: vectorScores[entry.key] ?? entry.value
+                )
+            }
+    }
+
+    /// The BM25 index for `searchable`, rebuilt when the corpus it was built
+    /// from no longer matches (documents added, removed, or re-indexed).
+    private func lexicalIndex(for searchable: [KnowledgeChunk]) -> LexicalIndex {
+        // A collection-filtered query works over a subset, so only the
+        // full-corpus index is worth caching.
+        guard searchable.count == chunks.count else {
+            return LexicalIndex(documents: searchable.map { ($0.id, $0.text) })
+        }
+        if let cached = lexicalIndexCache, cached.count == chunks.count {
+            return cached
+        }
+        let index = LexicalIndex(documents: chunks.map { ($0.id, $0.text) })
+        lexicalIndexCache = index
+        return index
     }
 
     // MARK: - Watched Folders
