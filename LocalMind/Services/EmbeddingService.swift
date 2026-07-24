@@ -22,19 +22,64 @@ enum EmbeddingService {
 
     /// Embeds a piece of text into a vector, or nil if no signal could be
     /// extracted (empty / entirely out-of-vocabulary).
+    ///
+    /// Every vector this returns on a given device shares ONE dimension.
+    /// That invariant matters: sentence vectors (~512-dim) and the
+    /// word-centroid fallback (~300-dim) are different sizes, and
+    /// `cosineSimilarity` returns 0 across a size mismatch — so if a store
+    /// mixed the two, any chunk embedded the "other" way became silently
+    /// unretrievable. To prevent that we stay in the sentence space whenever
+    /// the sentence model exists (averaging over pieces when a whole string
+    /// won't embed), and only fall back to word vectors when the device has
+    /// no sentence model at all — in which case *everything* is word-space.
     static func embed(_ text: String) -> [Double]? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
-        if let sentence, let vector = sentence.vector(for: trimmed) {
-            return vector
+        if let sentence {
+            if let vector = sentence.vector(for: trimmed) {
+                return vector
+            }
+            // Long / awkward input the sentence model rejects wholesale: embed
+            // its pieces and average, keeping the sentence dimension. Returning
+            // nil (skip) is preferable to emitting a word-space vector that
+            // would silently never match the rest of the store.
+            return averagedSentenceVector(trimmed, model: sentence)
         }
 
-        // Fallback: centroid of in-vocabulary word vectors.
+        // No sentence model on this device — use word vectors, consistently.
+        return wordCentroid(trimmed)
+    }
+
+    /// Averages the sentence vectors of a long string's pieces (sentences,
+    /// then hard-split sub-pieces) so the result stays in the sentence space.
+    private static func averagedSentenceVector(_ text: String, model: NLEmbedding) -> [Double]? {
+        var pieces = splitIntoSentences(text)
+        // A single "sentence" can still be too long; hard-split those further.
+        pieces = pieces.flatMap { piece -> [String] in
+            model.vector(for: piece) != nil ? [piece] : hardSplit(piece, maxChars: 200)
+        }
+
+        var sum: [Double]?
+        var count = 0
+        for piece in pieces {
+            guard let vector = model.vector(for: piece) else { continue }
+            if sum == nil { sum = [Double](repeating: 0, count: vector.count) }
+            guard sum?.count == vector.count else { continue }
+            for i in 0..<vector.count { sum![i] += vector[i] }
+            count += 1
+        }
+        guard var result = sum, count > 0 else { return nil }
+        for i in result.indices { result[i] /= Double(count) }
+        return result
+    }
+
+    /// Centroid of a string's in-vocabulary word vectors (word space).
+    private static func wordCentroid(_ text: String) -> [Double]? {
         guard let word else { return nil }
         var sum = [Double](repeating: 0, count: word.dimension)
         var count = 0
-        for token in trimmed.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }) {
+        for token in text.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }) {
             if let vector = word.vector(for: String(token)) {
                 for i in 0..<sum.count { sum[i] += vector[i] }
                 count += 1
@@ -42,6 +87,18 @@ enum EmbeddingService {
         }
         guard count > 0 else { return nil }
         return sum.map { $0 / Double(count) }
+    }
+
+    private static func splitIntoSentences(_ text: String) -> [String] {
+        let tokenizer = NLTokenizer(unit: .sentence)
+        tokenizer.string = text
+        var sentences: [String] = []
+        tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
+            let piece = text[range].trimmingCharacters(in: .whitespacesAndNewlines)
+            if !piece.isEmpty { sentences.append(piece) }
+            return true
+        }
+        return sentences.isEmpty ? [text] : sentences
     }
 
     /// Cosine similarity in [-1, 1]; 0 when either vector is degenerate.
