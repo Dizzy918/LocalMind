@@ -95,6 +95,23 @@ struct AnyCodable: @unchecked Sendable, Codable {
         }
     }
 
+    /// The wrapped value as plain Foundation types, safe to hand to
+    /// `JSONSerialization`.
+    ///
+    /// `AnyCodable` is a Swift struct, so passing one into
+    /// `JSONSerialization.data(withJSONObject:)` — directly or nested inside a
+    /// dictionary — raises `NSInvalidArgumentException`. That's an
+    /// Objective-C exception, which `try` does **not** catch: it terminates the
+    /// process. Anything built for JSONSerialization must go through this.
+    var jsonValue: Any { Self.unwrapped(value) }
+
+    static func unwrapped(_ value: Any) -> Any {
+        if let wrapped = value as? AnyCodable { return unwrapped(wrapped.value) }
+        if let array = value as? [Any] { return array.map(unwrapped) }
+        if let dictionary = value as? [String: Any] { return dictionary.mapValues(unwrapped) }
+        return value
+    }
+
     func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
         switch value {

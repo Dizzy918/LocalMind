@@ -467,7 +467,12 @@ final class MCPService {
     /// and the audit log.
     nonisolated static func previewArguments(_ arguments: [String: Any]) -> String {
         guard !arguments.isEmpty else { return "No arguments." }
-        if let data = try? JSONSerialization.data(withJSONObject: arguments, options: [.sortedKeys]),
+        // Checked before serialising, not with `try?`: an unexpected value type
+        // makes JSONSerialization raise an Objective-C exception that `try`
+        // can't catch, and this formats arguments that came from a model and a
+        // third-party server. Falling back to key names beats terminating.
+        if JSONSerialization.isValidJSONObject(arguments),
+           let data = try? JSONSerialization.data(withJSONObject: arguments, options: [.sortedKeys]),
            let str = String(data: data, encoding: .utf8) {
             return str.count > 500 ? String(str.prefix(500)) + "…" : str
         }

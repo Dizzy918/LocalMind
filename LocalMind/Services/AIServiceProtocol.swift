@@ -144,6 +144,28 @@ func sum(_ lhs: Double?, _ rhs: Double?) -> Double? {
     return (lhs ?? 0) + (rhs ?? 0)
 }
 
+/// Serializes a chat request body, dropping `tools` if they can't be
+/// represented in JSON.
+///
+/// `JSONSerialization.data(withJSONObject:)` raises `NSInvalidArgumentException`
+/// on an unexpected type rather than throwing a Swift error, so `try` doesn't
+/// catch it and the process dies. Tool schemas come from third-party MCP
+/// servers, so they're exactly the part of the body we don't control — a
+/// server advertising something odd must not be able to take the app down.
+/// Losing tools for one request is a far better failure than a crash.
+nonisolated func encodeChatRequestBody(_ body: [String: Any]) throws -> Data {
+    if JSONSerialization.isValidJSONObject(body) {
+        return try JSONSerialization.data(withJSONObject: body)
+    }
+    var withoutTools = body
+    withoutTools["tools"] = nil
+    withoutTools["tool_choice"] = nil
+    guard JSONSerialization.isValidJSONObject(withoutTools) else {
+        throw AIServiceError.generationFailed("The request couldn't be encoded.")
+    }
+    return try JSONSerialization.data(withJSONObject: withoutTools)
+}
+
 /// A chunk of streaming response from an AI model.
 enum AIStreamChunk: Sendable {
     case text(String)

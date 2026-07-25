@@ -142,7 +142,7 @@ actor OpenAICompatibleService: AIServiceProtocol {
                                 "function": [
                                     "name": tool.name,
                                     "description": tool.description,
-                                    "parameters": tool.inputSchema
+                                    "parameters": tool.inputSchema.jsonValue
                                 ]
                             ]
                         }
@@ -160,7 +160,7 @@ actor OpenAICompatibleService: AIServiceProtocol {
                         }
                     }
 
-                    request.httpBody = try JSONSerialization.data(withJSONObject: body)
+                    request.httpBody = try encodeChatRequestBody(body)
 
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)
 
