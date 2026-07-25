@@ -151,6 +151,10 @@ enum AIStreamChunk: Sendable {
     case toolCalls([AIToolCall])
     /// Backend-reported token usage, emitted at most once near the end.
     case usage(AIUsage)
+    /// Tools a backend ran on its own behalf. Apple Intelligence owns its tool
+    /// loop inside the framework, so it reports completed runs rather than
+    /// asking the app to execute calls.
+    case toolRuns([ToolRun])
     case done
 }
 
