@@ -109,6 +109,14 @@ final class AIServiceManager {
     private let ollamaService = OllamaService()
     private var openAIService: OpenAICompatibleService?
     private var appleService: (any AIServiceProtocol)?
+
+    /// Generations currently in flight. A backend serving a request is alive,
+    /// so health probing pauses while this is non-zero.
+    private var activeRequests = 0
+    /// Consecutive failed health probes for the current backend.
+    private var consecutiveHealthFailures = 0
+    /// One missed probe is usually a busy machine, not a dead server.
+    private static let healthFailuresBeforeRedetect = 2
     // nonisolated so deinit (which is itself nonisolated on a MainActor
     // class) can cancel the task without hopping back to the main actor.
     private nonisolated(unsafe) var pollingTask: Task<Void, Never>?
@@ -206,6 +214,11 @@ final class AIServiceManager {
         shouldContinue: @escaping () -> Bool = { true },
         onDelta: (String) -> Void
     ) async throws -> ToolAugmentedAnswer {
+        // Pauses health probing for the duration: a backend that's answering
+        // is alive, and probing it under load is what used to knock it out.
+        activeRequests += 1
+        defer { activeRequests -= 1 }
+
         var working = messages
         /// One entry per round of model-generated text; joined at the end so
         /// an answer split across tool rounds reads as paragraphs.
@@ -588,9 +601,16 @@ final class AIServiceManager {
     private func startPolling() {
         pollingTask = Task { [weak self] in
             while !Task.isCancelled {
-                // Poll every 3 seconds
-                try? await Task.sleep(for: .seconds(3))
-                
+                // Poll every 3 seconds. `try?` would swallow the cancellation
+                // error the sleep throws, letting one more check run after the
+                // task was cancelled — which is exactly when something else has
+                // just taken ownership of the connection.
+                do {
+                    try await Task.sleep(for: .seconds(3))
+                } catch {
+                    return
+                }
+
                 guard let self = self else { break }
                 await self.performSilentCheck()
             }
@@ -602,21 +622,49 @@ final class AIServiceManager {
         guard !isCheckingAvailability else { return }
 
         if MemoryPressureMonitor.shared.isUnderPressure { return }
-        
+
+        // A backend that's mid-generation is alive by definition. Probing it
+        // anyway was actively harmful: local servers saturate the CPU while
+        // generating, the health request gets starved, and a single missed
+        // probe used to tear down the working connection — leaving
+        // `currentService` nil and the next request failing with "No AI
+        // backend available" while the model was still happily running. That
+        // lands hardest on Shortcuts and scheduled runs, where nobody is
+        // watching to retry.
+        guard activeRequests == 0 else {
+            consecutiveHealthFailures = 0
+            return
+        }
+
         if currentBackend == .none {
             // Nothing connected — try to find anything
             await detectAndConnect()
-        } else if currentBackend == .ollama {
-            // We are using Ollama. Check if it suddenly crashed or quit.
-            if await !ollamaService.checkAvailability() {
-                await detectAndConnect()
-            }
-        } else if currentBackend == .openAICompatible {
-            // We are using an OpenAI-compatible server. Check if it dropped.
-            if let service = openAIService, await !service.checkAvailability() {
-                await detectAndConnect()
-            }
+            return
         }
+
+        let stillUp: Bool
+        switch currentBackend {
+        case .ollama:
+            stillUp = await ollamaService.checkAvailability()
+        case .openAICompatible:
+            stillUp = await openAIService?.checkAvailability() ?? false
+        case .appleFoundationModels, .none:
+            // On-device: nothing to probe over the network.
+            stillUp = true
+        }
+
+        if stillUp {
+            consecutiveHealthFailures = 0
+            return
+        }
+
+        // Only give up on a connection after it fails twice in a row. One
+        // missed probe is far more often a busy machine than a dead server,
+        // and re-detecting costs the user their selected backend and model.
+        consecutiveHealthFailures += 1
+        guard consecutiveHealthFailures >= Self.healthFailuresBeforeRedetect else { return }
+        consecutiveHealthFailures = 0
+        await detectAndConnect()
     }
 
     /// Fetches the model list from Ollama and stores it in `availableModels`.
