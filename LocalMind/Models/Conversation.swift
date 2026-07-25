@@ -71,6 +71,9 @@ struct Conversation: Identifiable, Codable, Sendable {
     var summarizedMessageCount: Int = 0 // How many leading messages contextSummary covers
     var branches: [ConversationBranch] = []  // Earlier versions, saved when the user edits/regenerates
     var profileID: UUID?               // Owning profile. nil = orphan (pre-profiles legacy data).
+    /// Free-form labels for organising loose chats without forcing them into a
+    /// project. Stored lowercased and de-duplicated via `setTags`.
+    var tags: [String] = []
     let createdAt: Date
     var updatedAt: Date
 
@@ -114,7 +117,7 @@ struct Conversation: Identifiable, Codable, Sendable {
         case id, title, messages, toolType, customToolID, emoji
         case isPinned, isArchived, systemPromptOverride, profileID, createdAt, updatedAt
         case modelOverride, temperatureOverride, branches, agentID, autoRouteAgent
-        case contextSummary, summarizedMessageCount, projectID
+        case contextSummary, summarizedMessageCount, projectID, tags
     }
 
     init(from decoder: Decoder) throws {
@@ -137,6 +140,7 @@ struct Conversation: Identifiable, Codable, Sendable {
         self.projectID = try c.decodeIfPresent(UUID.self, forKey: .projectID)
         self.branches = try c.decodeIfPresent([ConversationBranch].self, forKey: .branches) ?? []
         self.profileID = try c.decodeIfPresent(UUID.self, forKey: .profileID)
+        self.tags = try c.decodeIfPresent([String].self, forKey: .tags) ?? []
         self.createdAt = try c.decode(Date.self, forKey: .createdAt)
         self.updatedAt = try c.decode(Date.self, forKey: .updatedAt)
     }
@@ -160,6 +164,7 @@ struct Conversation: Identifiable, Codable, Sendable {
         if summarizedMessageCount > 0 { try c.encode(summarizedMessageCount, forKey: .summarizedMessageCount) }
         try c.encodeIfPresent(projectID, forKey: .projectID)
         if !branches.isEmpty { try c.encode(branches, forKey: .branches) }
+        if !tags.isEmpty { try c.encode(tags, forKey: .tags) }
         try c.encodeIfPresent(profileID, forKey: .profileID)
         try c.encode(createdAt, forKey: .createdAt)
         try c.encode(updatedAt, forKey: .updatedAt)

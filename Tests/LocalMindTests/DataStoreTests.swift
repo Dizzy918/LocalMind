@@ -175,6 +175,113 @@ final class DataStoreTests: XCTestCase {
         XCTAssertEqual(dataStore.searchConversations(query: "   ").count, 0)
     }
 
+    // MARK: - Tags
+
+    private func savedConversation(_ title: String, text: String = "hello") -> Conversation {
+        var convo = Conversation(title: title)
+        convo.messages.append(ChatMessage(role: .user, content: text))
+        dataStore.saveConversation(convo)
+        return dataStore.conversations.first { $0.id == convo.id }!
+    }
+
+    func testTagsAreNormalisedOnWrite() {
+        let convo = savedConversation("Tagged")
+        dataStore.setTags(["  Work ", "WORK", "urgent", ""], for: convo)
+
+        let stored = dataStore.conversations.first { $0.id == convo.id }
+        // Case and whitespace variants are one tag, not three that look alike.
+        XCTAssertEqual(stored?.tags, ["work", "urgent"])
+    }
+
+    func testAddAndRemoveTag() {
+        var convo = savedConversation("Tagged")
+        dataStore.addTag("Research", to: convo)
+        convo = dataStore.conversations.first { $0.id == convo.id }!
+        XCTAssertEqual(convo.tags, ["research"])
+
+        dataStore.removeTag("RESEARCH", from: convo)
+        XCTAssertEqual(dataStore.conversations.first { $0.id == convo.id }?.tags, [])
+    }
+
+    func testFilteringBySelectionAndTag() {
+        let tagged = savedConversation("Has tag")
+        _ = savedConversation("No tag")
+        dataStore.addTag("work", to: tagged)
+
+        let all = dataStore.conversationsForSelection(.chat)
+        let filtered = dataStore.conversationsForSelection(.chat, tag: "work")
+        XCTAssertEqual(all.count, 2)
+        XCTAssertEqual(filtered.map(\.id), [tagged.id])
+    }
+
+    func testDeletingATagRemovesItEverywhere() {
+        let first = savedConversation("One")
+        let second = savedConversation("Two")
+        dataStore.addTag("temp", to: first)
+        dataStore.addTag("temp", to: second)
+        XCTAssertEqual(dataStore.allTags, ["temp"])
+
+        dataStore.deleteTagEverywhere("temp")
+        XCTAssertTrue(dataStore.allTags.isEmpty)
+        XCTAssertTrue(dataStore.conversations.allSatisfy { $0.tags.isEmpty })
+    }
+
+    func testTagsSurviveAReload() {
+        let convo = savedConversation("Persisted")
+        dataStore.setTags(["keepme"], for: convo)
+
+        let reloaded = DataStore(baseDirectoryOverride: testDir, defaults: dataStore.defaults)
+        XCTAssertEqual(reloaded.conversations.first { $0.id == convo.id }?.tags, ["keepme"])
+    }
+
+    func testLegacyConversationWithoutTagsDecodes() throws {
+        // Files written before tags existed must still load.
+        let json = """
+        {"id":"\(UUID().uuidString)","title":"Old","messages":[],"toolType":"chat",
+         "createdAt":0,"updatedAt":0}
+        """
+        let convo = try JSONDecoder().decode(Conversation.self, from: Data(json.utf8))
+        XCTAssertTrue(convo.tags.isEmpty)
+    }
+
+    // MARK: - Search
+
+    func testSearchMatchesCaseInsensitiveSubstrings() {
+        var convo = Conversation(title: "Swift notes")
+        convo.messages.append(ChatMessage(role: .user, content: "Investigating CONCURRENCY today"))
+        dataStore.saveConversation(convo)
+
+        // Substring, not whole-word, and case-insensitive — the behaviour the
+        // removed lowercased index used to provide.
+        XCTAssertFalse(dataStore.searchConversations(query: "concur").isEmpty)
+        XCTAssertFalse(dataStore.searchConversations(query: "SWIFT").isEmpty)
+        XCTAssertTrue(dataStore.searchConversations(query: "kotlin").isEmpty)
+    }
+
+    func testSearchRequiresEveryTerm() {
+        var convo = Conversation(title: "Trip")
+        convo.messages.append(ChatMessage(role: .user, content: "flights to Lisbon"))
+        dataStore.saveConversation(convo)
+
+        XCTAssertFalse(dataStore.searchConversations(query: "flights Lisbon").isEmpty)
+        XCTAssertTrue(dataStore.searchConversations(query: "flights Berlin").isEmpty)
+    }
+
+    func testSearchFindsEditedContentImmediately() {
+        // The old index was updated on save; searching live means an edit can
+        // never leave a stale entry behind.
+        var convo = Conversation(title: "Draft")
+        convo.messages.append(ChatMessage(role: .user, content: "original wording"))
+        dataStore.saveConversation(convo)
+
+        convo = dataStore.conversations.first { $0.id == convo.id }!
+        convo.messages[0].content = "replacement wording"
+        dataStore.saveConversation(convo)
+
+        XCTAssertTrue(dataStore.searchConversations(query: "original").isEmpty)
+        XCTAssertFalse(dataStore.searchConversations(query: "replacement").isEmpty)
+    }
+
     func testSearchIsScopedToActiveProfile() {
         // saveConversation stamps the active profile (read from the store's
         // injected defaults) onto new conversations, and search must only

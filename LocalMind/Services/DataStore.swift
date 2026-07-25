@@ -21,7 +21,7 @@ import os
 ///   - **Gzip compression** for large conversations (>50KB)
 ///   - **Lazy pagination** — only metadata loaded initially, full messages on demand
 ///   - **Incremental saves** — appends new messages instead of full re-encode
-///   - **Full-text search** — background-indexed conversation search
+///   - **Full-text search** — case-insensitive substring search over the loaded conversations
 @Observable
 final class DataStore {
     private(set) var conversations: [Conversation] = []
@@ -47,9 +47,6 @@ final class DataStore {
     private static let compressionThreshold = 50_000 // 50KB
     private let pageSize = 20
 
-    // Search index: conversation ID -> lowercased searchable text
-    private var searchIndex: [UUID: String] = [:]
-
     // MARK: - Initialization
 
     init() {
@@ -69,7 +66,6 @@ final class DataStore {
 
         ensureDirectories()
         loadAll()
-        buildSearchIndex()
         adoptOrphansForExistingProfile()
         seedDefaultAgentsIfNeeded()
     }
@@ -86,7 +82,6 @@ final class DataStore {
         baseDirectory = baseDirectoryOverride
         ensureDirectories()
         loadAll()
-        buildSearchIndex()
     }
 
     /// Upgrade path: if profiles already exist (user signed in on a prior
@@ -218,8 +213,6 @@ final class DataStore {
         if let data = try? JSONEncoder().encode(stamped) {
             writeWithCompression(data, to: url)
         }
-
-        updateSearchIndex(for: stamped)
     }
 
     /// One-time migration: when the user creates their first profile, claim
@@ -244,7 +237,6 @@ final class DataStore {
 
     func deleteConversation(_ conversation: Conversation) {
         conversations.removeAll { $0.id == conversation.id }
-        searchIndex.removeValue(forKey: conversation.id)
 
         let url = conversationURL(for: conversation.id)
         try? fileManager.removeItem(at: url)
@@ -293,7 +285,6 @@ final class DataStore {
 
     func deleteAllConversations() {
         conversations.removeAll()
-        searchIndex.removeAll()
 
         let dir = baseDirectory.appendingPathComponent("conversations")
         if let files = try? fileManager.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
@@ -303,11 +294,12 @@ final class DataStore {
         }
     }
 
-    func conversationsForSelection(_ selection: SidebarSelection, includeArchived: Bool = false) -> [Conversation] {
+    func conversationsForSelection(_ selection: SidebarSelection, includeArchived: Bool = false, tag: String? = nil) -> [Conversation] {
         let activeID = activeProfileID()
         return conversations
             .filter { !$0.messages.isEmpty }
             .filter { includeArchived || !$0.isArchived }
+            .filter { tag.map($0.tags.contains) ?? true }
             // Hide conversations owned by other profiles. Orphan conversations
             // (profileID == nil) are visible only when there's no active
             // profile — they get claimed on first profile creation.
@@ -400,6 +392,48 @@ final class DataStore {
         deleteConversation(source)
     }
 
+    // MARK: - Tags
+
+    /// Every tag in use by the active profile, sorted — drives the filter bar.
+    var allTags: [String] {
+        let activeID = activeProfileID()
+        let visible = conversations.filter { convo in
+            activeID.map { convo.profileID == $0 } ?? (convo.profileID == nil)
+        }
+        return Array(Set(visible.flatMap(\.tags))).sorted()
+    }
+
+    /// Replaces a conversation's tags, normalising as it goes: trimmed,
+    /// lowercased, de-duplicated, and order-stable. Normalising on write means
+    /// "Work", "work", and " work " are one tag rather than three that look
+    /// identical in the sidebar.
+    func setTags(_ tags: [String], for conversation: Conversation) {
+        var seen = Set<String>()
+        let normalized = tags
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+
+        var updated = conversation
+        updated.tags = normalized
+        saveConversation(updated)
+    }
+
+    func addTag(_ tag: String, to conversation: Conversation) {
+        setTags(conversation.tags + [tag], for: conversation)
+    }
+
+    func removeTag(_ tag: String, from conversation: Conversation) {
+        setTags(conversation.tags.filter { $0 != tag.lowercased() }, for: conversation)
+    }
+
+    /// Drops a tag from every conversation that carries it.
+    func deleteTagEverywhere(_ tag: String) {
+        let target = tag.lowercased()
+        for conversation in conversations where conversation.tags.contains(target) {
+            removeTag(target, from: conversation)
+        }
+    }
+
     func togglePin(_ conversation: Conversation) {
         var updated = conversation
         updated.isPinned.toggle()
@@ -429,19 +463,15 @@ final class DataStore {
     // MARK: - Search
 
     func searchConversations(query: String) -> [Conversation] {
-        let terms = query.lowercased()
+        let terms = query
             .split(separator: " ")
-            .map { String($0) }
+            .map(String.init)
             .filter { !$0.isEmpty }
         guard !terms.isEmpty else { return [] }
 
-        let matchingIDs = searchIndex.filter { entry in
-            terms.allSatisfy { entry.value.contains($0) }
-        }.map { $0.key }
-
         let activeID = activeProfileID()
         return conversations
-            .filter { matchingIDs.contains($0.id) }
+            .filter { Self.matches($0, terms: terms) }
             // Search must stay within the active profile — otherwise profile A
             // could surface profile B's chats. Mirrors conversationsForSelection.
             .filter { convo in
@@ -482,17 +512,25 @@ final class DataStore {
         return nil
     }
 
-    private func buildSearchIndex() {
-        for conversation in conversations {
-            updateSearchIndex(for: conversation)
+    /// Whether every term appears somewhere in the conversation's title or
+    /// messages.
+    ///
+    /// Matching runs against the live messages instead of a prebuilt index.
+    /// The old index kept a lowercased copy of every message of every
+    /// conversation permanently in memory — a full second copy of the user's
+    /// history for no algorithmic gain, since the messages themselves were
+    /// already loaded. Case-insensitive `range(of:)` compares in place without
+    /// allocating lowercased duplicates, so the same substring behaviour costs
+    /// nothing to keep.
+    nonisolated private static func matches(_ conversation: Conversation, terms: [String]) -> Bool {
+        terms.allSatisfy { term in
+            if conversation.title.range(of: term, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
+                return true
+            }
+            return conversation.messages.contains { message in
+                message.content.range(of: term, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+            }
         }
-    }
-
-    private func updateSearchIndex(for conversation: Conversation) {
-        let text = ([conversation.title] + conversation.messages.map { $0.content })
-            .joined(separator: " ")
-            .lowercased()
-        searchIndex[conversation.id] = text
     }
 
     // MARK: - Focus Sessions

@@ -40,6 +40,11 @@ struct SidebarView: View {
     @State private var showingHelp = false
     @State private var editingProject: Project?
     @State private var isCreatingProject = false
+    /// Tag currently filtering the list; nil shows everything.
+    @State private var activeTag: String?
+    /// Conversation awaiting a new tag name, and the name being typed.
+    @State private var taggingConversation: Conversation?
+    @State private var newTagName = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -132,6 +137,72 @@ struct SidebarView: View {
                 onCancel: { mergeSource = nil }
             )
         }
+        .alert("New Tag", isPresented: Binding(
+            get: { taggingConversation != nil },
+            set: { if !$0 { taggingConversation = nil } }
+        )) {
+            TextField("Tag name", text: $newTagName)
+            Button("Add") {
+                if let conversation = taggingConversation {
+                    dataStore.addTag(newTagName, to: conversation)
+                }
+                taggingConversation = nil
+                newTagName = ""
+            }
+            Button("Cancel", role: .cancel) {
+                taggingConversation = nil
+                newTagName = ""
+            }
+        } message: {
+            Text("Tags group loose chats without moving them into a project.")
+        }
+    }
+
+    // MARK: - Tags
+
+    /// Horizontal chips filtering the list to one tag. Only shown when tags
+    /// exist, so it costs nothing for people who don't use them.
+    private var tagFilterBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(dataStore.allTags, id: \.self) { tag in
+                    let isActive = activeTag == tag
+                    Button {
+                        withAnimation(AppTheme.Animations.quick) {
+                            activeTag = isActive ? nil : tag
+                        }
+                    } label: {
+                        Text(tag)
+                            .font(.system(size: 10, weight: .medium))
+                            .lineLimit(1)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(
+                                Capsule().fill(isActive
+                                    ? AppTheme.Colors.accentPrimary.opacity(0.22)
+                                    : AppTheme.Colors.backgroundSecondary)
+                            )
+                            .foregroundStyle(isActive
+                                ? AppTheme.Colors.accentPrimary
+                                : AppTheme.Colors.textSecondary)
+                    }
+                    .buttonStyle(.plain)
+                    .contextMenu {
+                        Button(role: .destructive) {
+                            if activeTag == tag { activeTag = nil }
+                            dataStore.deleteTagEverywhere(tag)
+                        } label: {
+                            Label("Delete tag everywhere", systemImage: "trash")
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, AppTheme.Spacing.sm)
+        }
+        .frame(height: 24)
+        // A filter that survives into a section with no matches looks like an
+        // empty app, so it clears when the section changes.
+        .onChange(of: selectedSelection) { _, _ in activeTag = nil }
     }
 
     // MARK: - App Header
@@ -410,10 +481,14 @@ struct SidebarView: View {
                 .padding(.top, AppTheme.Spacing.md)
             }
 
+            if !isCompact, searchQuery.isEmpty, !dataStore.allTags.isEmpty {
+                tagFilterBar
+            }
+
             ScrollView {
                 LazyVStack(spacing: AppTheme.Spacing.xxs) {
                     let conversations = searchQuery.isEmpty
-                        ? dataStore.conversationsForSelection(selectedSelection)
+                        ? dataStore.conversationsForSelection(selectedSelection, tag: activeTag)
                         : dataStore.searchConversations(query: searchQuery)
 
                     if conversations.isEmpty {
@@ -462,6 +537,32 @@ struct SidebarView: View {
                                 }
 
                                 Divider()
+
+                                Menu {
+                                    // Existing tags first, so the vocabulary
+                                    // converges instead of every chat inventing
+                                    // its own spelling.
+                                    ForEach(dataStore.allTags, id: \.self) { tag in
+                                        Button {
+                                            if conversation.tags.contains(tag) {
+                                                dataStore.removeTag(tag, from: conversation)
+                                            } else {
+                                                dataStore.addTag(tag, to: conversation)
+                                            }
+                                        } label: {
+                                            Label(tag, systemImage: conversation.tags.contains(tag) ? "checkmark" : "tag")
+                                        }
+                                    }
+                                    if !dataStore.allTags.isEmpty { Divider() }
+                                    Button {
+                                        taggingConversation = conversation
+                                        newTagName = ""
+                                    } label: {
+                                        Label("New Tag…", systemImage: "plus")
+                                    }
+                                } label: {
+                                    Label("Tags", systemImage: "tag")
+                                }
 
                                 Button {
                                     mergeSource = conversation
