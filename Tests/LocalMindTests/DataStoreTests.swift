@@ -258,6 +258,18 @@ final class DataStoreTests: XCTestCase {
         XCTAssertTrue(dataStore.searchConversations(query: "kotlin").isEmpty)
     }
 
+    func testSearchIsCaseInsensitiveButNotAccentFolding() {
+        var convo = Conversation(title: "Trip notes")
+        convo.messages.append(ChatMessage(role: .user, content: "lunch at the café"))
+        dataStore.saveConversation(convo)
+
+        XCTAssertFalse(dataStore.searchConversations(query: "CAFÉ").isEmpty, "case is folded")
+        // Accent folding is deliberately not done: it costs ~16x in the search
+        // primitive, and the app never had it — the old lowercased index didn't
+        // fold accents either. Pinned so it's a decision, not a silent drift.
+        XCTAssertTrue(dataStore.searchConversations(query: "cafe").isEmpty)
+    }
+
     func testSearchRequiresEveryTerm() {
         var convo = Conversation(title: "Trip")
         convo.messages.append(ChatMessage(role: .user, content: "flights to Lisbon"))
