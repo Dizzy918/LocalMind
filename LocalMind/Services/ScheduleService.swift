@@ -172,8 +172,11 @@ final class ScheduleService {
         // sign-in the result conversation would be orphaned (profile-less).
         // lastRunDate isn't stamped until fire(), so the 30-second timer
         // retries and the catch-up behaviour is preserved.
+        // Reads the profile through the data store's defaults rather than
+        // `.standard` — the store owns that key, and in tests it points at an
+        // isolated suite so a parallel test process can't flip this check.
         guard generationService.hasAvailableBackend,
-              UserDefaults.standard.string(forKey: "activeProfileID") != nil else { return }
+              dataStore.defaults.string(forKey: "activeProfileID") != nil else { return }
         let calendar = Calendar.current
         for run in runs where Self.isDue(run, now: now, calendar: calendar) {
             fire(run, at: now)
