@@ -70,17 +70,29 @@ enum LiveEnvironment {
         try XCTSkipUnless(found, "npx not on PATH — skipping live MCP test")
     }
 
-    /// Live MCP tests are opt-in via `LOCALMIND_LIVE_MCP=1`.
+    /// Live MCP tests are opt-in. Run them with:
     ///
-    /// They spawn real `npx` servers inside the test host — which is also a
-    /// full app instance that connects to whatever MCP servers the developer
-    /// has configured. A dozen node and python processes then compete for the
-    /// machine, and handshakes that take 2s in isolation blow past any
-    /// reasonable timeout. That makes the tests non-deterministic for reasons
-    /// unrelated to the code under test, so they don't run by default.
+    ///     TEST_RUNNER_LOCALMIND_LIVE_MCP=1 xcodebuild test \
+    ///       -scheme LocalMind -destination 'platform=macOS' \
+    ///       -parallel-testing-enabled NO \
+    ///       -only-testing:LocalMindTests/LiveMCPTests
+    ///
+    /// The `TEST_RUNNER_` prefix is required — xcodebuild doesn't pass the
+    /// shell's environment through to the test host, it forwards only
+    /// variables with that prefix (and strips it).
+    ///
+    /// They're off by default because they spawn real `npx` servers inside a
+    /// test host that is itself a full app instance, connecting to whatever
+    /// MCP servers the developer has configured. A dozen node and python
+    /// processes then compete for the machine, and a handshake that takes 2s
+    /// in isolation blows past any reasonable timeout — non-determinism that
+    /// has nothing to do with the code under test. `-parallel-testing-enabled
+    /// NO` matters for the same reason.
     static func requireLiveMCPOptIn() throws {
-        let enabled = ProcessInfo.processInfo.environment["LOCALMIND_LIVE_MCP"] == "1"
-        try XCTSkipUnless(enabled, "Set LOCALMIND_LIVE_MCP=1 to run live MCP tests")
+        let environment = ProcessInfo.processInfo.environment
+        let enabled = environment["LOCALMIND_LIVE_MCP"] == "1"
+            || environment["TEST_RUNNER_LOCALMIND_LIVE_MCP"] == "1"
+        try XCTSkipUnless(enabled, "Set TEST_RUNNER_LOCALMIND_LIVE_MCP=1 to run live MCP tests")
     }
 }
 

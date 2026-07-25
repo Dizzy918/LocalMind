@@ -72,6 +72,8 @@ struct LocalMindApp: App {
     private var layout: AppLayout { AppLayout(rawValue: layoutRaw) ?? .classic }
 
     init() {
+        Self.handOffToRunningInstanceIfNeeded()
+
         // Register the AppStorage default so a fresh install reads `true` here
         // instead of UserDefaults's bool fallback of `false`.
         UserDefaults.standard.register(defaults: ["isDarkMode": true])
@@ -147,6 +149,35 @@ struct LocalMindApp: App {
         default:
             break
         }
+    }
+
+    /// If LocalMind is already running, activate that copy and exit.
+    ///
+    /// macOS only prevents a second launch of the *same* bundle on disk, so two
+    /// copies at different paths — the usual state on a development machine,
+    /// where every Debug and Release build is its own bundle — run happily side
+    /// by side. Each one adds its own menu-bar icon and its own set of spawned
+    /// MCP servers, and they write to the same Application Support directory,
+    /// so the two instances quietly fight over the user's chat history.
+    ///
+    /// Bringing the existing copy forward is also what a user expects when they
+    /// launch an app that's already open.
+    private static func handOffToRunningInstanceIfNeeded() {
+        // XCTest hosts this app to run the suite. Terminating here would kill
+        // the test run whenever a real instance happened to be open.
+        guard NSClassFromString("XCTestCase") == nil else { return }
+        guard let identifier = Bundle.main.bundleIdentifier else { return }
+
+        let mine = ProcessInfo.processInfo.processIdentifier
+        let existing = NSRunningApplication
+            .runningApplications(withBundleIdentifier: identifier)
+            .first { $0.processIdentifier != mine && !$0.isTerminated }
+
+        guard let existing else { return }
+        existing.activate(options: [.activateAllWindows])
+        // exit() rather than NSApp.terminate: this runs before the app is far
+        // enough along for the normal termination path to be meaningful.
+        exit(0)
     }
 
     /// Shared entry point for external asks (URL scheme, Services menu):

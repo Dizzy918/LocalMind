@@ -70,6 +70,14 @@ final class MCPService {
         loadConfigs()
         loadDisabledTools()
         loadAutoApprovedTools()
+
+        // XCTest hosts this app to run the suite, so without this guard every
+        // test run spawned one server process per configured server — the
+        // developer's real MCP setup, launched a dozen node and python
+        // processes at a time, for tests that never touch MCP. Beyond being
+        // wasteful, the contention made unrelated timeouts fire and left the
+        // machine littered with servers.
+        guard NSClassFromString("XCTestCase") == nil else { return }
         Task { await connectAll() }
     }
 
