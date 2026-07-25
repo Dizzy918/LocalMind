@@ -311,6 +311,10 @@ All settings are available in the app's Settings panel (`Cmd + ,`):
 
 Unit tests live in `Tests/LocalMindTests/` and UI smoke tests in `Tests/LocalMindUITests/` — both wired into the `LocalMind` scheme, no setup needed. See [Tests/README.md](Tests/README.md) for the file-by-file breakdown.
 
+The suite can't cover anything needing a live model, a real MCP server, or the
+system's Shortcuts database — [docs/QA-CHECKLIST.md](docs/QA-CHECKLIST.md) is the
+manual pass for those, run before tagging a release.
+
 ```bash
 xcodebuild test \
   -project LocalMind.xcodeproj \
