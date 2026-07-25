@@ -116,8 +116,14 @@ struct LocalMindApp: App {
     ///   localmind://new                          — start a blank conversation
     ///   localmind://ask?prompt=…&agent=Coder     — ask (optionally via an agent)
     private func handleIncomingURL(_ url: URL) {
-        guard url.scheme?.lowercased() == "localmind",
-              sharedProfileStore.isSignedIn else { return }
+        guard url.scheme?.lowercased() == "localmind" else { return }
+
+        // The OAuth redirect has to be handled before the sign-in check: it's
+        // a browser returning from an MCP server's consent screen, not a user
+        // asking a question.
+        if MCPOAuthService.shared.handleCallback(url) { return }
+
+        guard sharedProfileStore.isSignedIn else { return }
 
         let queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         func value(_ name: String) -> String? {

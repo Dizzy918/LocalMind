@@ -264,6 +264,10 @@ struct MCPServerRowView: View {
     let onShowLogs: () -> Void
     let onShowTools: () -> Void
 
+    /// Surfaced inline rather than thrown away — an OAuth failure is usually
+    /// something the user has to act on (wrong account, denied consent).
+    @State private var oauthError: String?
+
     var body: some View {
         HStack(spacing: AppTheme.Spacing.md) {
             VStack(alignment: .leading, spacing: 4) {
@@ -292,6 +296,12 @@ struct MCPServerRowView: View {
                         .foregroundStyle(.red)
                         .lineLimit(2)
                 }
+                if let oauthError {
+                    Text(oauthError)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.red)
+                        .lineLimit(2)
+                }
             }
 
             Spacer()
@@ -308,6 +318,32 @@ struct MCPServerRowView: View {
                         Task { await onReconnect() }
                     } label: {
                         Label("Reconnect", systemImage: "arrow.clockwise")
+                    }
+                }
+                // Remote servers increasingly require OAuth rather than a
+                // hand-typed API key header.
+                if case .http(let url, _) = config.transport, let parsed = URL(string: url) {
+                    Divider()
+                    if MCPOAuthService.shared.isSignedIn(serverName: config.name) {
+                        Button {
+                            MCPOAuthService.shared.signOut(serverName: config.name)
+                        } label: {
+                            Label("Sign Out", systemImage: "person.crop.circle.badge.xmark")
+                        }
+                    } else {
+                        Button {
+                            Task {
+                                oauthError = nil
+                                do {
+                                    try await MCPOAuthService.shared.signIn(serverName: config.name, serverURL: parsed)
+                                    await onReconnect()
+                                } catch {
+                                    oauthError = error.localizedDescription
+                                }
+                            }
+                        } label: {
+                            Label("Sign In…", systemImage: "person.crop.circle.badge.checkmark")
+                        }
                     }
                 }
                 Button {

@@ -483,6 +483,15 @@ actor MCPClient: Sendable {
         req.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
         for (k, v) in httpExtraHeaders { req.setValue(v, forHTTPHeaderField: k) }
         if let sid = httpSessionID { req.setValue(sid, forHTTPHeaderField: "Mcp-Session-Id") }
+        // A bearer token from an OAuth sign-in, refreshed if it's near expiry.
+        // A user-supplied Authorization header still wins, so an API key typed
+        // in by hand keeps working.
+        if httpExtraHeaders["Authorization"] == nil {
+            let serverName = config.name
+            if let token = await MCPOAuthService.shared.validToken(for: serverName) {
+                req.setValue(token.authorizationHeader, forHTTPHeaderField: "Authorization")
+            }
+        }
         req.httpBody = body
 
         do {
