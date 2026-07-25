@@ -208,6 +208,24 @@ struct LocalMindApp: App {
                     let mcpService = MCPService(dataStore: sharedDataStore)
                     sharedMCPService = mcpService
                     sharedAIManager.setMCPService(mcpService)
+
+                    // Stop the servers we spawned before the process goes away.
+                    // Child processes are reparented rather than killed when
+                    // their parent exits, so skipping this leaves one server
+                    // process per configured server running after every quit.
+                    NotificationCenter.default.addObserver(
+                        forName: NSApplication.willTerminateNotification,
+                        object: nil,
+                        queue: .main
+                    ) { _ in
+                        // Synchronous on purpose. This runs on the main thread
+                        // moments before the process exits, so an async hop
+                        // would simply never get scheduled — and waiting on a
+                        // @MainActor task from here deadlocks the very thread
+                        // that would run it. The registry terminates the child
+                        // processes directly, with no suspension.
+                        MCPProcessRegistry.shared.terminateAll()
+                    }
                     BubbleWindowController.shared.setup(aiManager: sharedAIManager, dataStore: sharedDataStore, generationService: sharedGenerationService)
 
                     // Hand the data store a one-time migration hook so the

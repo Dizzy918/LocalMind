@@ -169,3 +169,64 @@ final class RequestEncodingTests: XCTestCase {
         XCTAssertNoThrow(try encodeChatRequestBody(body))
     }
 }
+
+// MARK: - Child-process lifecycle
+
+/// MCP servers are spawned child processes, and a child outlives its parent
+/// unless it's explicitly stopped. Testing showed 36 orphaned server processes
+/// accumulate across a handful of app launches: each reconnect replaced the
+/// client without stopping the old process, and quitting the app stopped none
+/// of them.
+final class MCPProcessRegistryTests: XCTestCase {
+
+    /// A cheap, long-running child that stands in for an MCP server.
+    private func makeSleeper() throws -> Process {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["120"]
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        try process.run()
+        return process
+    }
+
+    func testTerminateAllStopsEveryRegisteredProcess() throws {
+        let registry = MCPProcessRegistry.shared
+        registry.terminateAll()   // start from a clean slate
+
+        let processes = try (0..<3).map { _ in try makeSleeper() }
+        processes.forEach(registry.register)
+        XCTAssertEqual(registry.count, 3)
+        XCTAssertTrue(processes.allSatisfy(\.isRunning))
+
+        registry.terminateAll()
+
+        // terminate() is asynchronous at the OS level; give it a moment.
+        let deadline = Date().addingTimeInterval(5)
+        while processes.contains(where: \.isRunning), Date() < deadline {
+            usleep(100_000)
+        }
+        XCTAssertTrue(processes.allSatisfy { !$0.isRunning }, "a quit must not leave servers running")
+        XCTAssertEqual(registry.count, 0)
+    }
+
+    func testUnregisteredProcessIsNotTracked() throws {
+        let registry = MCPProcessRegistry.shared
+        registry.terminateAll()
+
+        let process = try makeSleeper()
+        registry.register(process)
+        XCTAssertEqual(registry.count, 1)
+        registry.unregister(process)
+        XCTAssertEqual(registry.count, 0, "a cleanly disconnected client must not be terminated twice")
+
+        process.terminate()
+    }
+
+    func testTerminateAllIsIdempotent() {
+        let registry = MCPProcessRegistry.shared
+        registry.terminateAll()
+        registry.terminateAll()
+        XCTAssertEqual(registry.count, 0)
+    }
+}

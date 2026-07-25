@@ -195,6 +195,16 @@ final class MCPService {
     }
 
     func connect(config: MCPServerConfig) async {
+        // Tear down any previous client for this server first. Without this a
+        // retry replaced the dictionary entry and dropped the old client on the
+        // floor — and dropping a client doesn't stop the process it spawned, so
+        // every reconnect left another node/python server running. That
+        // compounds: the orphans consume the CPU that made the server slow
+        // enough to time out, which triggers another retry, which leaks again.
+        if let existing = clients.removeValue(forKey: config.name) {
+            await existing.disconnect()
+        }
+
         let client = MCPClient(config: config)
         clients[config.name] = client
 
@@ -224,6 +234,23 @@ final class MCPService {
             connectionStates[config.name] = .failed(error.localizedDescription)
             scheduleRetry(for: config)
         }
+    }
+
+    /// Stops every server. Called when the app is quitting.
+    ///
+    /// A spawned server is a child process that outlives its parent — macOS
+    /// reparents it rather than killing it — so without this, quitting
+    /// LocalMind left a node or python process per configured server running
+    /// until the user rebooted or killed them by hand.
+    func disconnectAll() async {
+        for task in retryTasks.values { task.cancel() }
+        retryTasks.removeAll()
+        retryAttempts.removeAll()
+        for (name, client) in clients {
+            await client.disconnect()
+            connectionStates[name] = .disconnected
+        }
+        clients.removeAll()
     }
 
     func disconnect(config: MCPServerConfig) async {

@@ -7,6 +7,48 @@
 
 import Foundation
 
+/// Every MCP child process currently running, so they can be stopped
+/// synchronously when the app quits.
+///
+/// Cleanup at exit can't go through the actors that own these processes:
+/// `applicationWillTerminate` runs on the main thread and the process is torn
+/// down immediately afterwards, so anything awaiting an actor hop simply never
+/// runs (and blocking the main thread to wait for a `@MainActor` task
+/// deadlocks). A lock-protected registry can be drained straight from the
+/// notification handler with no suspension at all.
+nonisolated final class MCPProcessRegistry: @unchecked Sendable {
+    static let shared = MCPProcessRegistry()
+
+    private let lock = NSLock()
+    private var processes: [ObjectIdentifier: Process] = [:]
+
+    func register(_ process: Process) {
+        lock.lock(); defer { lock.unlock() }
+        processes[ObjectIdentifier(process)] = process
+    }
+
+    func unregister(_ process: Process) {
+        lock.lock(); defer { lock.unlock() }
+        processes.removeValue(forKey: ObjectIdentifier(process))
+    }
+
+    /// Terminates everything still running. Safe to call more than once.
+    func terminateAll() {
+        lock.lock()
+        let running = Array(processes.values)
+        processes.removeAll()
+        lock.unlock()
+        for process in running where process.isRunning {
+            process.terminate()
+        }
+    }
+
+    var count: Int {
+        lock.lock(); defer { lock.unlock() }
+        return processes.count
+    }
+}
+
 actor MCPClient: Sendable {
     nonisolated let config: MCPServerConfig
     nonisolated let transport: MCPTransport
@@ -59,6 +101,23 @@ actor MCPClient: Sendable {
         self.transport = config.transport
     }
 
+    /// Last-resort cleanup for a client that's released without `disconnect()`.
+    ///
+    /// A spawned MCP server is a child process, and a child does not die
+    /// because its parent dropped the last reference to the object that
+    /// started it — or even because the parent exited. Without this, any path
+    /// that loses a client leaks a long-running node/python process for the
+    /// rest of the session.
+    deinit {
+        readerTask?.cancel()
+        if let process {
+            MCPProcessRegistry.shared.unregister(process)
+            process.terminate()
+        }
+        for task in httpInFlight { task.cancel() }
+        for task in pendingTimeouts.values { task.cancel() }
+    }
+
     var connectionState: MCPConnectionState {
         get async { state }
     }
@@ -91,7 +150,10 @@ actor MCPClient: Sendable {
     private func teardownProcess() async {
         readerTask?.cancel()
         readerTask = nil
-        process?.terminate()
+        if let process {
+            MCPProcessRegistry.shared.unregister(process)
+            process.terminate()
+        }
         process = nil
         stdinPipe = nil
         stdoutPipe = nil
@@ -111,6 +173,7 @@ actor MCPClient: Sendable {
         readerTask = nil
 
         if let process = process {
+            MCPProcessRegistry.shared.unregister(process)
             process.terminate()
             self.process = nil
         }
@@ -211,6 +274,8 @@ actor MCPClient: Sendable {
             let detail = stderrMsg.isEmpty ? error.localizedDescription : stderrMsg
             throw MCPError.transportError("Failed to launch '\(resolved)': \(detail)")
         }
+
+        MCPProcessRegistry.shared.register(process)
 
         startReadingStdout(stdoutPipe)
         startReadingStderr(stderrPipe)
@@ -403,13 +468,17 @@ actor MCPClient: Sendable {
             "clientInfo": AnyCodable(["name": request.clientInfo.name, "version": request.clientInfo.version])
         ]
 
-        // 20s is generous for npx cold-cache installs; anything longer is
-        // almost certainly a dead handshake (wrong package, server crashed
-        // silently after stdio open, etc.). We'd rather surface an error
-        // than leave the UI stuck on "Connecting…" indefinitely. The timeout
-        // is enforced per-request inside `sendRequest`, which cleans up the
-        // pending continuation on expiry (the old TaskGroup race could leak it).
-        let response = try await sendRequest(method: "initialize", params: params, timeout: 20)
+        // Measured: this server answers in ~2s warm and ~8s cold with a warm
+        // npm cache. A first-ever `npx -y` install on a slow connection, or a
+        // machine under load, is far slower — and the old 20s bound turned
+        // that into "the package may not exist", which sends the user looking
+        // for a problem that isn't there. 90s is long enough that a timeout
+        // really does mean a dead handshake, and the cost of being wrong is
+        // only a slower failure on a screen that already says "Connecting…".
+        //
+        // Enforced per-request inside `sendRequest`, which cleans up the
+        // pending continuation on expiry (the old TaskGroup race leaked it).
+        let response = try await sendRequest(method: "initialize", params: params, timeout: 90)
         guard let result = response.result else {
             throw MCPError.serverError("Empty initialize response")
         }
@@ -445,8 +514,15 @@ actor MCPClient: Sendable {
     private func timeoutRequest(_ id: JSONRPCID, method: String, seconds: Double) {
         pendingTimeouts.removeValue(forKey: id)
         guard let continuation = pendingRequests.removeValue(forKey: id) else { return }
+        // Deliberately doesn't assert *why*. The old wording blamed a missing
+        // package, which is only one cause among several (slow first install,
+        // a machine under load, a server that stalled after starting) and sent
+        // people chasing the wrong thing.
+        let detail = method == "initialize"
+            ? "The server started but never completed the handshake. If it installs on first run, try again — the download may still have been in progress."
+            : "The server didn't respond. It may have stalled; reconnecting usually clears it."
         continuation.resume(throwing: MCPError.transportError(
-            "Timed out after \(Int(seconds))s waiting for '\(method)'. The server may have stalled or the package may not exist."
+            "Timed out after \(Int(seconds))s waiting for '\(method)'. \(detail)"
         ))
     }
 
