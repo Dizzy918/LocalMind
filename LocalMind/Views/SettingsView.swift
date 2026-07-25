@@ -47,6 +47,7 @@ struct SettingsView: View {
         case automations = "Automations"
         case customTools = "Tools"
         case mcp = "MCP"
+        case usage = "Usage"
         case about = "About"
 
         var icon: String {
@@ -60,6 +61,7 @@ struct SettingsView: View {
             case .automations: return "clock.badge"
             case .customTools: return "hammer"
             case .mcp: return "server.rack"
+            case .usage: return "chart.bar"
             case .about: return "info.circle"
             }
         }
@@ -105,6 +107,10 @@ struct SettingsView: View {
                     .tag(SettingsTab.mcp)
             }
             
+            UsageInsightsView(dataStore: dataStore)
+                .tabItem { Label(SettingsTab.usage.rawValue, systemImage: SettingsTab.usage.icon) }
+                .tag(SettingsTab.usage)
+
             aboutTab
                 .tabItem { Label(SettingsTab.about.rawValue, systemImage: SettingsTab.about.icon) }
                 .tag(SettingsTab.about)
