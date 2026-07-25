@@ -330,23 +330,28 @@ struct QuickActionPanel: View {
                 // Pass the full conversation history to the model so it remembers the context
                 let history = currentConversation?.messages ?? [userMessage]
                 
-                for try await chunk in service.streamChat(
+                // The quick panel is the fastest way into the app, so it gets
+                // tools too — a menu-bar ask that can't check the calendar or
+                // read a file is a lesser assistant than the same question
+                // typed in the main window.
+                let outcome = try await aiManager.streamChatWithTools(
+                    service: service,
                     messages: history,
                     systemPrompt: "You are a quick menu bar assistant. Provide very concise, direct answers. Do not use filler words.",
                     modelOverride: nil,
                     parameters: aiManager.aiParameters,
-                    tools: nil
-                ) {
-                    if Task.isCancelled { break }
-                    if case .text(let t) = chunk { resultText += t }
-                }
-                
+                    tools: aiManager.tools(for: nil),
+                    shouldContinue: { !Task.isCancelled },
+                    onDelta: { delta in resultText += delta }
+                )
+
                 // When finished generating, save the AI's response to the conversation
-                if !Task.isCancelled && !resultText.isEmpty {
-                    let aiMessage = ChatMessage(role: .assistant, content: resultText)
+                if !Task.isCancelled && !outcome.text.isEmpty {
+                    var aiMessage = ChatMessage(role: .assistant, content: outcome.text)
+                    if !outcome.toolRuns.isEmpty { aiMessage.toolRuns = outcome.toolRuns }
                     currentConversation?.messages.append(aiMessage)
                     currentConversation?.updatedAt = Date()
-                    
+
                     if let convo = currentConversation {
                         dataStore.saveConversation(convo)
                     }

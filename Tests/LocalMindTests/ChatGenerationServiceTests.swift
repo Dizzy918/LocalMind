@@ -497,6 +497,21 @@ final class ChatGenerationServiceTests: XCTestCase {
         XCTAssertEqual(decoded.toolRuns?.first?.arguments, "{\"q\":\"swift\"}")
     }
 
+    // MARK: Agent tool resolution
+    //
+    // Every surface that runs an agent shares this, so agents' tool settings
+    // can't be honoured in chat and ignored in pipelines or quick actions.
+
+    func testToolsAreNilWhenNoBackendProvidesThem() {
+        // No MCP service wired up in tests — nothing to offer.
+        XCTAssertNil(aiManager.tools(for: nil))
+    }
+
+    func testAgentWithToolsDisabledResolvesToNil() {
+        let agent = Agent(name: "NoTools", systemPrompt: "p", allowTools: false)
+        XCTAssertNil(aiManager.tools(for: agent))
+    }
+
     // MARK: Automation (App Intents / Shortcuts)
 
     func testAutomationReturnsTheAnswerText() async throws {

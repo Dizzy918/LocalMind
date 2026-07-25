@@ -465,11 +465,7 @@ final class ChatGenerationService {
         // Tools: agents can disable them outright or limit them to a named
         // subset. MCP execution is backend-independent, so cross-backend
         // agents keep their tools.
-        var availableTools = (agent?.allowTools ?? true) ? aiManager.getAvailableTools() : []
-        if let allowed = agent?.allowedToolIDs {
-            availableTools = availableTools.filter { allowed.contains($0.name) }
-        }
-        let tools = availableTools.isEmpty ? nil : availableTools
+        let tools = aiManager.tools(for: agent)
 
         let generationStart = Date()
 

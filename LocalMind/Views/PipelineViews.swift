@@ -159,6 +159,9 @@ struct PipelineRunnerView: View {
 
     @State private var input = ""
     @State private var stepOutputs: [String] = []
+    /// Tools each step ran, so a pipeline isn't a black box when a step
+    /// depends on a tool that failed or returned something unexpected.
+    @State private var stepToolRuns: [[ToolRun]] = []
     @State private var currentStep = -1
     @State private var isRunning = false
     @State private var runError: String?
@@ -297,6 +300,9 @@ struct PipelineRunnerView: View {
                     ProgressView().controlSize(.mini)
                 }
             }
+            if index < stepToolRuns.count, !stepToolRuns[index].isEmpty {
+                ToolRunTranscript(runs: stepToolRuns[index])
+            }
             if index < stepOutputs.count, !stepOutputs[index].isEmpty {
                 MessageMarkdownView(text: stepOutputs[index])
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -317,6 +323,7 @@ struct PipelineRunnerView: View {
         runTask?.cancel()
         runError = nil
         stepOutputs = Array(repeating: "", count: pipeline.steps.count)
+        stepToolRuns = Array(repeating: [], count: pipeline.steps.count)
         isRunning = true
         let request = input.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -371,18 +378,26 @@ struct PipelineRunnerView: View {
                 }()
 
                 do {
-                    for try await chunk in service.streamChat(
+                    // Steps run agents, and agents carry tool settings — so a
+                    // step has to honour them. Passing no tools here meant a
+                    // pipeline built around a web-search agent quietly did no
+                    // searching.
+                    let outcome = try await aiManager.streamChatWithTools(
+                        service: service,
                         messages: [ChatMessage(role: .user, content: userContent)],
                         systemPrompt: systemPrompt,
                         modelOverride: model,
                         parameters: parameters,
-                        tools: nil
-                    ) {
-                        if Task.isCancelled { break }
-                        if case .text(let text) = chunk {
-                            stepOutputs[index] += text
+                        tools: aiManager.tools(for: agent),
+                        shouldContinue: { !Task.isCancelled },
+                        onDelta: { delta in
+                            stepOutputs[index] += delta
                         }
-                    }
+                    )
+                    // Keep the clean text for the next step; the markers the
+                    // user watched stay out of what gets handed downstream.
+                    stepOutputs[index] = outcome.text
+                    stepToolRuns[index] = outcome.toolRuns
                 } catch {
                     if !Task.isCancelled {
                         runError = error.localizedDescription

@@ -263,6 +263,11 @@ final class AIServiceManager {
                     pending.append(contentsOf: calls)
                 case .usage(let usage):
                     absorb(usage)
+                case .toolRuns(let runs):
+                    // A backend that ran its own tool loop (Apple
+                    // Intelligence) reports what it did; there's nothing for
+                    // this loop to execute, only to record.
+                    toolRuns.append(contentsOf: runs)
                 case .done:
                     break
                 }
@@ -310,6 +315,22 @@ final class AIServiceManager {
             if !shouldContinue() { return answer() }
             // Loop: stream the model's follow-up turn with the results in context.
         }
+    }
+
+    /// The tools an agent may use, honouring its own settings: tools can be
+    /// switched off entirely or narrowed to a named subset. nil means "send no
+    /// tools", which is what every caller wants when nothing is available.
+    ///
+    /// Shared so every surface that runs an agent applies the same rules —
+    /// agents carry tool settings, and a surface that ignored them would let a
+    /// user configure something that silently does nothing.
+    func tools(for agent: Agent?) -> [AITool]? {
+        guard agent?.allowTools ?? true else { return nil }
+        var available = getAvailableTools()
+        if let allowed = agent?.allowedToolIDs {
+            available = available.filter { allowed.contains($0.name) }
+        }
+        return available.isEmpty ? nil : available
     }
 
     /// Gets available tools from MCP service for the current conversation
